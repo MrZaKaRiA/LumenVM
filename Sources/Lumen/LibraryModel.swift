@@ -23,6 +23,8 @@ final class LibraryModel: ObservableObject {
     private var pending: Set<UUID> = []
     private var usage: [UUID: Int64] = [:]
     private var usageTimer: AnyCancellable?
+    private var sleepingMachineIDs: Set<UUID> = []
+    private var sleepWakeCancellables: [AnyCancellable] = []
     let isDemo: Bool
 
     init() {
@@ -53,6 +55,7 @@ final class LibraryModel: ObservableObject {
         usageTimer = Timer.publish(every: 8, on: .main, in: .common).autoconnect().sink { [weak self] _ in
             self?.refreshUsage()
         }
+        setupSleepWakeObservers()
     }
 
     var hasActiveMachines: Bool { machines.contains { state(for: $0.id).isActive } }
@@ -295,6 +298,205 @@ final class LibraryModel: ObservableObject {
         usage = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, (try? SparseDisk.usage(at: library.location(for: $0.id).disk).allocatedBytes) ?? 0) })
         objectWillChange.send()
     }
+
+    // MARK: - Sleep / Wake Observers
+
+    private func setupSleepWakeObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        center.publisher(for: NSWorkspace.willSleepNotification)
+            .sink { [weak self] _ in self?.handleSystemWillSleep() }
+            .store(in: &sleepWakeCancellables)
+        center.publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in self?.handleSystemDidWake() }
+            .store(in: &sleepWakeCancellables)
+    }
+
+    private func handleSystemWillSleep() {
+        var running: Set<UUID> = []
+        for machine in machines {
+            if state(for: machine.id) == .running {
+                running.insert(machine.id)
+                if let apple = appleEngines[machine.id] {
+                    Task { do { try await apple.pause() } catch {} }
+                } else if let qemu = qemuEngines[machine.id] {
+                    try? qemu.pause()
+                }
+            }
+        }
+        sleepingMachineIDs = running
+    }
+
+    private func handleSystemDidWake() {
+        guard !sleepingMachineIDs.isEmpty else { return }
+        let toResume = sleepingMachineIDs
+        sleepingMachineIDs.removeAll()
+        // Wait 800ms for host GPU, audio, and network devices to settle
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            for id in toResume {
+                if let apple = self.appleEngines[id], apple.state == .paused {
+                    Task { do { try await apple.resume() } catch {} }
+                } else if let qemu = self.qemuEngines[id], qemu.state == .paused {
+                    try? qemu.resume()
+                }
+            }
+        }
+    }
+
+    // MARK: - Touch ID Biometric VM Login
+
+    func hasTouchIDPassword(for record: VirtualMachineRecord) -> Bool {
+        TouchIDService.shared.hasSavedPassword(for: record.id)
+    }
+
+    func saveTouchIDPassword(_ password: String, for record: VirtualMachineRecord) throws {
+        try TouchIDService.shared.savePassword(password, for: record.id)
+        objectWillChange.send()
+    }
+
+    func deleteTouchIDPassword(for record: VirtualMachineRecord) {
+        TouchIDService.shared.deletePassword(for: record.id)
+        objectWillChange.send()
+    }
+
+    func unlockWithTouchID(_ record: VirtualMachineRecord) async {
+        do {
+            let password = try await TouchIDService.shared.authenticateAndRetrievePassword(for: record.id, machineName: record.name)
+            if let qemu = qemuEngines[record.id], qemu.state == .running {
+                try await qemu.typePassword(password)
+            } else if let engine = appleEngines[record.id], engine.state == .running, let window = guestWindows[record.id] {
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                await typeIntoWindow(window, text: password)
+            } else {
+                errorMessage = "\(record.name) is not currently running."
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func typeIntoWindow(_ window: NSWindow, text: String) async {
+        for char in text {
+            sendCharacterToWindow(window, char: char)
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        sendKeyCodeToWindow(window, keyCode: 36, characters: "\r")
+    }
+
+    private func sendCharacterToWindow(_ window: NSWindow, char: Character) {
+        let (keyCode, shift) = keyCodeForChar(char)
+        let flags: NSEvent.ModifierFlags = shift ? .shift : []
+        let str = String(char)
+        if let down = NSEvent.keyEvent(with: .keyDown,
+                                      location: .zero,
+                                      modifierFlags: flags,
+                                      timestamp: ProcessInfo.processInfo.systemUptime,
+                                      windowNumber: window.windowNumber,
+                                      context: nil,
+                                      characters: str,
+                                      charactersIgnoringModifiers: str,
+                                      isARepeat: false,
+                                      keyCode: keyCode) {
+            window.sendEvent(down)
+        }
+        if let up = NSEvent.keyEvent(with: .keyUp,
+                                    location: .zero,
+                                    modifierFlags: flags,
+                                    timestamp: ProcessInfo.processInfo.systemUptime,
+                                    windowNumber: window.windowNumber,
+                                    context: nil,
+                                    characters: str,
+                                    charactersIgnoringModifiers: str,
+                                    isARepeat: false,
+                                    keyCode: keyCode) {
+            window.sendEvent(up)
+        }
+    }
+
+    private func sendKeyCodeToWindow(_ window: NSWindow, keyCode: UInt16, characters: String) {
+        if let down = NSEvent.keyEvent(with: .keyDown,
+                                      location: .zero,
+                                      modifierFlags: [],
+                                      timestamp: ProcessInfo.processInfo.systemUptime,
+                                      windowNumber: window.windowNumber,
+                                      context: nil,
+                                      characters: characters,
+                                      charactersIgnoringModifiers: characters,
+                                      isARepeat: false,
+                                      keyCode: keyCode) {
+            window.sendEvent(down)
+        }
+        if let up = NSEvent.keyEvent(with: .keyUp,
+                                    location: .zero,
+                                    modifierFlags: [],
+                                    timestamp: ProcessInfo.processInfo.systemUptime,
+                                    windowNumber: window.windowNumber,
+                                    context: nil,
+                                    characters: characters,
+                                    charactersIgnoringModifiers: characters,
+                                    isARepeat: false,
+                                    keyCode: keyCode) {
+            window.sendEvent(up)
+        }
+    }
+
+    private func keyCodeForChar(_ char: Character) -> (keyCode: UInt16, shift: Bool) {
+        switch char {
+        case "a": return (0, false); case "A": return (0, true)
+        case "s": return (1, false); case "S": return (1, true)
+        case "d": return (2, false); case "D": return (2, true)
+        case "f": return (3, false); case "F": return (3, true)
+        case "h": return (4, false); case "H": return (4, true)
+        case "g": return (5, false); case "G": return (5, true)
+        case "z": return (6, false); case "Z": return (6, true)
+        case "x": return (7, false); case "X": return (7, true)
+        case "c": return (8, false); case "C": return (8, true)
+        case "v": return (9, false); case "V": return (9, true)
+        case "b": return (11, false); case "B": return (11, true)
+        case "q": return (12, false); case "Q": return (12, true)
+        case "w": return (13, false); case "W": return (13, true)
+        case "e": return (14, false); case "E": return (14, true)
+        case "r": return (15, false); case "R": return (15, true)
+        case "y": return (16, false); case "Y": return (16, true)
+        case "t": return (17, false); case "T": return (17, true)
+        case "1": return (18, false); case "!": return (18, true)
+        case "2": return (19, false); case "@": return (19, true)
+        case "3": return (20, false); case "#": return (20, true)
+        case "4": return (21, false); case "$": return (21, true)
+        case "6": return (22, false); case "^": return (22, true)
+        case "5": return (23, false); case "%": return (23, true)
+        case "=": return (24, false); case "+": return (24, true)
+        case "9": return (25, false); case "(": return (25, true)
+        case "7": return (26, false); case "&": return (26, true)
+        case "-": return (27, false); case "_": return (27, true)
+        case "8": return (28, false); case "*": return (28, true)
+        case "0": return (29, false); case ")": return (29, true)
+        case "]": return (30, false); case "}": return (30, true)
+        case "o": return (31, false); case "O": return (31, true)
+        case "u": return (32, false); case "U": return (32, true)
+        case "[": return (33, false); case "{": return (33, true)
+        case "i": return (34, false); case "I": return (34, true)
+        case "p": return (35, false); case "P": return (35, true)
+        case "l": return (37, false); case "L": return (37, true)
+        case "j": return (38, false); case "J": return (38, true)
+        case "'": return (39, false); case "\"": return (39, true)
+        case "k": return (40, false); case "K": return (40, true)
+        case ";": return (41, false); case ":": return (41, true)
+        case "\\": return (42, false); case "|": return (42, true)
+        case ",": return (43, false); case "<": return (43, true)
+        case "/": return (44, false); case "?": return (44, true)
+        case "n": return (45, false); case "N": return (45, true)
+        case "m": return (46, false); case "M": return (46, true)
+        case ".": return (47, false); case ">": return (47, true)
+        case "`": return (50, false); case "~": return (50, true)
+        case " ": return (49, false)
+        case "\t": return (48, false)
+        case "\n", "\r": return (36, false)
+        default: return (0, false)
+        }
+    }
 }
 
 private struct GuestWindowView: View {
@@ -303,6 +505,7 @@ private struct GuestWindowView: View {
     @EnvironmentObject var model: LibraryModel
     @State private var confirmForceStop = false
     @State private var showMountCopied = false
+    @State private var showingTouchIDSheet = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -345,6 +548,27 @@ private struct GuestWindowView: View {
                     .font(.system(size: 11))
                 }
 
+                if engine.state == .running && model.hasTouchIDPassword(for: record) {
+                    Button {
+                        Task { await model.unlockWithTouchID(record) }
+                    } label: {
+                        Label("Touch ID", systemImage: "touchid")
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11))
+                    .help("Unlock guest with Touch ID (⌘L)")
+                    .keyboardShortcut("l", modifiers: .command)
+                }
+
+                Button {
+                    showingTouchIDSheet = true
+                } label: {
+                    Image(systemName: "key.fill")
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+                .help("Configure Touch ID Password")
+
                 Button { model.pauseOrResume(record) } label: { Image(systemName: engine.state == .paused ? "play.fill" : "pause.fill") }
                     .disabled(engine.state != .running && engine.state != .paused)
                     .help(engine.state == .paused ? "Resume" : "Pause")
@@ -371,6 +595,9 @@ private struct GuestWindowView: View {
         }
         .confirmationDialog("Force stop \(record.name)? Unsaved work in the guest will be lost.", isPresented: $confirmForceStop) {
             Button("Force Stop", role: .destructive) { model.forceStop(record) }
+        }
+        .sheet(isPresented: $showingTouchIDSheet) {
+            TouchIDSheet(machine: record).environmentObject(model)
         }
     }
 }

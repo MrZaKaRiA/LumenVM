@@ -10,6 +10,7 @@ struct NewMachineSheet: View {
     @State private var selectedGuest: GuestOS = .ubuntu
     @State private var selectedDistro: LinuxDistribution?
     @State private var distroSearchText: String = ""
+    @State private var selectedDistroCategory: DistroCategory = .all
     @State private var configuring = false
     @State private var name = "Ubuntu"
     @State private var cpuCount = 4
@@ -296,9 +297,9 @@ struct NewMachineSheet: View {
     }
 
     private var distroCatalogSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Known Linux Distributions")
+                Text("Known ARM64 Linux Distributions")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.9))
                 Spacer()
@@ -307,11 +308,28 @@ struct NewMachineSheet: View {
                     TextField("Search distributions…", text: $distroSearchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 11))
-                        .frame(width: 150)
+                        .frame(width: 160)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
+            }
+
+            // Category filter pills
+            HStack(spacing: 6) {
+                ForEach(DistroCategory.allCases) { cat in
+                    Button {
+                        selectedDistroCategory = cat
+                    } label: {
+                        Text(cat.rawValue)
+                            .font(.system(size: 10, weight: selectedDistroCategory == cat ? .semibold : .regular))
+                            .foregroundStyle(selectedDistroCategory == cat ? Color(red: 0.08, green: 0.18, blue: 0.15) : .white.opacity(0.75))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(selectedDistroCategory == cat ? LumenStyle.mint : Color.white.opacity(0.06)))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
 
             ScrollView {
@@ -348,7 +366,7 @@ struct NewMachineSheet: View {
                                 .font(.system(size: 13))
                         }
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 9)
                         .background(RoundedRectangle(cornerRadius: 10).fill(isSelected ? LumenStyle.mint.opacity(0.08) : Color.white.opacity(0.02)))
                         .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(isSelected ? LumenStyle.mint.opacity(0.4) : Color.clear, lineWidth: 1) }
                         .contentShape(RoundedRectangle(cornerRadius: 10))
@@ -365,20 +383,22 @@ struct NewMachineSheet: View {
                 }
                 .padding(.vertical, 2)
             }
-            .frame(maxHeight: 180)
+            .frame(minHeight: 280, maxHeight: 360)
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.02)))
     }
 
     private var filteredDistros: [LinuxDistribution] {
-        if distroSearchText.trimmingCharacters(in: .whitespaces).isEmpty {
-            return LinuxDistribution.catalog
+        var base = LinuxDistribution.catalog.filter { $0.support != .none }
+        if selectedDistroCategory != .all {
+            base = base.filter { selectedDistroCategory.matches($0) }
         }
-        let query = distroSearchText.lowercased()
-        return LinuxDistribution.catalog.filter {
-            $0.name.lowercased().contains(query) || $0.summary.lowercased().contains(query)
+        if !distroSearchText.trimmingCharacters(in: .whitespaces).isEmpty {
+            let query = distroSearchText.lowercased()
+            base = base.filter { $0.name.lowercased().contains(query) || $0.summary.lowercased().contains(query) }
         }
+        return base
     }
 
     private func distroSupportBadge(_ support: ARMSupport) -> some View {
@@ -813,3 +833,24 @@ struct NewMachineSheet: View {
         }
     }
 }
+
+enum DistroCategory: String, CaseIterable, Identifiable {
+    case all = "All"
+    case popular = "Popular"
+    case server = "Server"
+    case security = "Security"
+    case rolling = "Rolling"
+
+    var id: String { rawValue }
+
+    func matches(_ distro: LinuxDistribution) -> Bool {
+        switch self {
+        case .all: return true
+        case .popular: return ["ubuntu", "debian", "fedora", "kali"].contains(distro.id)
+        case .server: return !distro.desktop || ["ubuntu-server", "fedora-server", "rocky", "almalinux", "alpine"].contains(distro.id)
+        case .security: return ["kali", "parrot"].contains(distro.id)
+        case .rolling: return ["arch", "opensuse-tumbleweed", "void", "nixos", "gentoo"].contains(distro.id)
+        }
+    }
+}
+

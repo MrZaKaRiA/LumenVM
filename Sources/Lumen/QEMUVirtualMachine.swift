@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Darwin
 import Foundation
@@ -105,6 +106,19 @@ final class QEMUVirtualMachine: ObservableObject {
         child.standardInput = input
         child.standardOutput = output
         child.standardError = logHandle
+
+        var env = ProcessInfo.processInfo.environment
+        if let helper = helperDylibURL() {
+            env["DYLD_INSERT_LIBRARIES"] = helper.path
+            env["LUMEN_VM_NAME"] = record.name
+            env["LUMEN_VM_WIDTH"] = String(record.displayWidth)
+            env["LUMEN_VM_HEIGHT"] = String(record.displayHeight)
+            if let iconURL = try? prepareGuestIcon() {
+                env["LUMEN_VM_ICON"] = iconURL.path
+            }
+        }
+        child.environment = env
+
         // A dead child must report an error, rather than deliver SIGPIPE to the application.
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -271,12 +285,15 @@ final class QEMUVirtualMachine: ObservableObject {
     }
 
     private func makeArguments(firmware: (code: URL, variables: URL), bootInstaller: Bool) throws -> [String] {
+        let memMB = record.memoryGiB * 1024
         var arguments = [
             "-name", record.name.replacingOccurrences(of: ",", with: ",,"),
-            "-machine", "virt,highmem=on,gic-version=3,pflash0=uefi-code,pflash1=uefi-vars",
+            "-machine", "virt,highmem=on,gic-version=3,pflash0=uefi-code,pflash1=uefi-vars,memory-backend=mem0",
+            "-object", "memory-backend-ram,id=mem0,size=\(memMB)M,reserve=off",
             "-accel", "hvf", "-cpu", "host", "-smp", String(record.cpuCount),
-            "-m", String(record.memoryGiB * 1024),
+            "-m", String(memMB),
             "-nodefaults", "-display", "cocoa,zoom-to-fit=on", "-device", "ramfb",
+            "-fw_cfg", "name=opt/org.tianocore/X-GOP-Resolution,string=\(record.displayWidth)x\(record.displayHeight)",
             "-device", "qemu-xhci,id=usb", "-device", "usb-kbd", "-device", "usb-tablet",
             "-device", "virtio-balloon-pci"
         ]
@@ -445,6 +462,144 @@ final class QEMUVirtualMachine: ObservableObject {
         guard let length = try? file.seekToEnd() else { return "" }
         try? file.seek(toOffset: length > 4096 ? length - 4096 : 0)
         return String(decoding: (try? file.readToEnd()) ?? Data(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func typePassword(_ text: String) async throws {
+        guard state == .running else { throw QEMUError("The machine must be running to receive input.") }
+        for char in text {
+            try await sendCharacter(char)
+            try? await Task.sleep(nanoseconds: 25_000_000)
+        }
+        try await sendKey("ret")
+    }
+
+    private func sendCharacter(_ char: Character) async throws {
+        let (qcode, shift) = qcodeForChar(char)
+        if shift {
+            _ = try await request("send-key", arguments: [
+                "keys": [["type": "qcode", "data": "shift"], ["type": "qcode", "data": qcode]],
+                "hold-time": 50
+            ])
+        } else {
+            _ = try await request("send-key", arguments: [
+                "keys": [["type": "qcode", "data": qcode]],
+                "hold-time": 50
+            ])
+        }
+    }
+
+    private func qcodeForChar(_ char: Character) -> (code: String, shift: Bool) {
+        switch char {
+        case "a"..."z": return (String(char), false)
+        case "A"..."Z": return (String(char).lowercased(), true)
+        case "0"..."9": return (String(char), false)
+        case " ": return ("spc", false)
+        case "\t": return ("tab", false)
+        case "\n", "\r": return ("ret", false)
+        case "!": return ("1", true)
+        case "@": return ("2", true)
+        case "#": return ("3", true)
+        case "$": return ("4", true)
+        case "%": return ("5", true)
+        case "^": return ("6", true)
+        case "&": return ("7", true)
+        case "*": return ("8", true)
+        case "(": return ("9", true)
+        case ")": return ("0", true)
+        case "-": return ("minus", false)
+        case "_": return ("minus", true)
+        case "=": return ("equal", false)
+        case "+": return ("equal", true)
+        case "[": return ("bracket_left", false)
+        case "{": return ("bracket_left", true)
+        case "]": return ("bracket_right", false)
+        case "}": return ("bracket_right", true)
+        case ";": return ("semicolon", false)
+        case ":": return ("semicolon", true)
+        case "'": return ("apostrophe", false)
+        case "\"": return ("apostrophe", true)
+        case ",": return ("comma", false)
+        case "<": return ("comma", true)
+        case ".": return ("dot", false)
+        case ">": return ("dot", true)
+        case "/": return ("slash", false)
+        case "?": return ("slash", true)
+        case "\\": return ("backslash", false)
+        case "|": return ("backslash", true)
+        case "`": return ("grave_accent", false)
+        case "~": return ("grave_accent", true)
+        default: return (String(char).lowercased(), false)
+        }
+    }
+
+    private func helperDylibURL() -> URL? {
+        if let bundled = Bundle.main.url(forResource: "LumenQEMUHelper", withExtension: "dylib") {
+            return bundled
+        }
+        let local = URL(fileURLWithPath: "Resources/LumenQEMUHelper.dylib")
+        if FileManager.default.isReadableFile(atPath: local.path) {
+            return local
+        }
+        let built = URL(fileURLWithPath: "build/Lumen.app/Contents/Resources/LumenQEMUHelper.dylib")
+        if FileManager.default.isReadableFile(atPath: built.path) {
+            return built
+        }
+        let target = location.directory.appendingPathComponent("LumenQEMUHelper.dylib")
+        if FileManager.default.isReadableFile(atPath: target.path) {
+            return target
+        }
+        let source = URL(fileURLWithPath: "Sources/LumenHelper/LumenQEMUHelper.m")
+        if FileManager.default.isReadableFile(atPath: source.path) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/clang")
+            proc.arguments = ["-dynamiclib", "-arch", "arm64", "-O2", "-framework", "AppKit", "-framework", "Foundation", "-o", target.path, source.path]
+            try? proc.run()
+            proc.waitUntilExit()
+            if FileManager.default.isReadableFile(atPath: target.path) {
+                return target
+            }
+        }
+        return nil
+    }
+
+    private func prepareGuestIcon() throws -> URL {
+        let iconURL = location.directory.appendingPathComponent("icon.png")
+        if FileManager.default.fileExists(atPath: iconURL.path) {
+            return iconURL
+        }
+        let size = NSSize(width: 256, height: 256)
+        let image = NSImage(size: size)
+        image.lockFocus()
+
+        let bgPath = NSBezierPath(roundedRect: NSRect(origin: .zero, size: size), xRadius: 54, yRadius: 54)
+        NSColor(calibratedRed: 0.10, green: 0.14, blue: 0.19, alpha: 1.0).setFill()
+        bgPath.fill()
+
+        let border = NSBezierPath(roundedRect: NSRect(x: 2, y: 2, width: 252, height: 252), xRadius: 52, yRadius: 52)
+        border.lineWidth = 3
+        NSColor(calibratedRed: 0.46, green: 0.71, blue: 1.0, alpha: 0.35).setStroke()
+        border.stroke()
+
+        let tileWidth: CGFloat = 82
+        let tileHeight: CGFloat = 82
+        let gap: CGFloat = 14
+        let originX: CGFloat = 39
+        let originY: CGFloat = 39
+
+        NSColor(calibratedRed: 0.35, green: 0.68, blue: 1.0, alpha: 1.0).setFill()
+        NSRect(x: originX, y: originY, width: tileWidth, height: tileHeight).fill()
+        NSRect(x: originX + tileWidth + gap, y: originY, width: tileWidth, height: tileHeight).fill()
+        NSRect(x: originX, y: originY + tileHeight + gap, width: tileWidth, height: tileHeight).fill()
+        NSRect(x: originX + tileWidth + gap, y: originY + tileHeight + gap, width: tileWidth, height: tileHeight).fill()
+
+        image.unlockFocus()
+
+        if let tiff = image.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try png.write(to: iconURL, options: .atomic)
+        }
+        return iconURL
     }
 
     private func cleanup() {

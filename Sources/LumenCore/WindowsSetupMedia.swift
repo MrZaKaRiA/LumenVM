@@ -14,6 +14,7 @@ public enum WindowsSetupMedia {
     public static func files(bypassChecks: Bool, sharedFolderName: String?) -> [File] {
         var files = [
             File(relativePath: "autounattend.xml", contents: autounattend(bypassChecks: bypassChecks)),
+            File(relativePath: "startup.nsh", contents: startupScript),
             File(relativePath: "lumen/install-drivers.cmd", contents: driverScript),
             File(relativePath: "README.txt", contents: readme)
         ]
@@ -109,10 +110,31 @@ public enum WindowsSetupMedia {
         """
     }
 
+    /// Automatically runs in the EDK2 UEFI shell if the user does not press a key in time,
+    /// booting \EFI\BOOT\BOOTAA64.EFI directly without dropping into the interactive shell prompt.
+    static let startupScript = """
+    @echo -off\r
+    mode 0\r
+    if exist fs0:\\efi\\boot\\bootaa64.efi then\r
+      fs0:\\efi\\boot\\bootaa64.efi\r
+    endif\r
+    if exist fs1:\\efi\\boot\\bootaa64.efi then\r
+      fs1:\\efi\\boot\\bootaa64.efi\r
+    endif\r
+    if exist fs2:\\efi\\boot\\bootaa64.efi then\r
+      fs2:\\efi\\boot\\bootaa64.efi\r
+    endif\r
+    if exist fs3:\\efi\\boot\\bootaa64.efi then\r
+      fs3:\\efi\\boot\\bootaa64.efi\r
+    endif\r
+
+    """
+
     static let readme = """
     Lumen Windows helper disc\r
     \r
     autounattend.xml  - lets Windows Setup run on this virtual machine; all choices stay yours.\r
+    startup.nsh       - automatically launches the Windows 11 installer from UEFI.\r
     lumen\\install-drivers.cmd - installs VirtIO network and memory drivers when available.\r
     lumen\\Connect Mac Shared Folder.cmd - maps your Mac shared folder as drive Z:.\r
 

@@ -42,7 +42,6 @@ final class DetectionAndPolicyTests: XCTestCase {
             ("Rocky-10.0-aarch64-minimal.iso", "rocky", .arm64),
             ("archboot-2025.10.01-aarch64-ARCH-local.iso", "arch", .arm64),
             ("alpine-standard-3.22.1-aarch64.iso", "alpine", .arm64),
-            ("linuxmint-22.2-cinnamon-64bit.iso", "linux-mint", .x86_64),
             ("ubuntu-24.04-desktop-amd64.iso", "ubuntu", .x86_64)
         ]
         for (name, distro, arch) in cases {
@@ -101,6 +100,7 @@ final class DetectionAndPolicyTests: XCTestCase {
         XCTAssertTrue(xml.contains("processorArchitecture=\"arm64\""))
         XCTAssertFalse(xml.contains("<ProductKey>"))
         XCTAssertFalse(xml.contains("<DiskConfiguration>"))
+        XCTAssertTrue(files.contains { $0.relativePath == "startup.nsh" && $0.contents.contains("bootaa64.efi") })
         XCTAssertTrue(files.contains { $0.relativePath.hasSuffix("Connect Mac Shared Folder.cmd") && $0.contents.contains(#"\\10.0.2.2\Lumen Shared"#) })
         let plain = WindowsSetupMedia.autounattend(bypassChecks: false)
         XCTAssertFalse(plain.contains("LabConfig"))

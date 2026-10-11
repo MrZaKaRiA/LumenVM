@@ -107,14 +107,6 @@ public struct LinuxDistribution: Identifiable, Hashable {
               "Source-based. Use the arm64 minimal install ISO.", keywords: ["gentoo", "install-arm64-minimal"], desktop: false),
         .init("openeuler", "openEuler", .linux, .official, "https://www.openeuler.org/en/download/",
               "Enterprise Linux community distribution.", keywords: ["openeuler"], desktop: false),
-        .init("linux-mint", "Linux Mint", .ubuntu, .none, "https://linuxmint.com/download.php",
-              "Popular desktop, but only Intel/AMD ISOs exist.", keywords: ["linuxmint", "mint"]),
-        .init("elementary", "elementary OS", .ubuntu, .none, "https://elementary.io",
-              "Polished desktop, Intel/AMD ISOs only.", keywords: ["elementary"]),
-        .init("zorin", "Zorin OS", .ubuntu, .none, "https://zorin.com/os/download/",
-              "Windows-like desktop, Intel/AMD ISOs only.", keywords: ["zorin"]),
-        .init("mx", "MX Linux", .debian, .none, "https://mxlinux.org/download-links/",
-              "Desktop ISOs are Intel/AMD only.", keywords: ["mx-", "mxlinux"]),
         .init("other", "Other Linux", .linux, .official, "https://distrowatch.com/search.php?arch=aarch64",
               "Any ARM64 / AArch64 UEFI-bootable ISO.", keywords: [])
     ]

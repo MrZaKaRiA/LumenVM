@@ -9,6 +9,7 @@ struct LibraryView: View {
     @State private var machineToRemove: VirtualMachineRecord?
     @State private var machineToForceStop: VirtualMachineRecord?
     @State private var machineToEdit: VirtualMachineRecord?
+    @State private var machineForTouchID: VirtualMachineRecord?
 
     private var allocatedBytes: Int64 {
         model.machines.reduce(0) { $0 + model.allocatedBytes(for: $1.id) }
@@ -43,7 +44,7 @@ struct LibraryView: View {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach(model.machines) { machine in
-                            MachineRow(machine: machine, onRemove: { machineToRemove = machine }, onForceStop: { machineToForceStop = machine }, onEdit: { machineToEdit = machine })
+                            MachineRow(machine: machine, onRemove: { machineToRemove = machine }, onForceStop: { machineToForceStop = machine }, onEdit: { machineToEdit = machine }, onConfigureTouchID: { machineForTouchID = machine })
                         }
                     }
                     .padding(.horizontal, 28)
@@ -62,6 +63,7 @@ struct LibraryView: View {
         .sheet(isPresented: $showingNewMachine) { NewMachineSheet().environmentObject(model) }
         .sheet(isPresented: $showingCompatibility) { CompatibilitySheet() }
         .sheet(item: $machineToEdit) { machine in NewMachineSheet(machine: machine).environmentObject(model) }
+        .sheet(item: $machineForTouchID) { machine in TouchIDSheet(machine: machine).environmentObject(model) }
         .alert("Something needs attention", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: {
@@ -244,6 +246,7 @@ private struct MachineRow: View {
     let onRemove: () -> Void
     let onForceStop: () -> Void
     let onEdit: () -> Void
+    let onConfigureTouchID: () -> Void
     @State private var hovered = false
 
     private var state: VMRuntimeState { model.state(for: machine.id) }
@@ -330,6 +333,12 @@ private struct MachineRow: View {
                 if state.isActive && machine.guest.usesAppleVirtualization {
                     Button("Show display", systemImage: "display") { model.showDisplay(machine) }
                 }
+                if state == .running && model.hasTouchIDPassword(for: machine) {
+                    Button("Unlock with Touch ID", systemImage: "touchid") {
+                        Task { await model.unlockWithTouchID(machine) }
+                    }
+                }
+                Button("Touch ID login…", systemImage: "touchid", action: onConfigureTouchID)
                 if state == .running || state == .paused {
                     Button(state == .paused ? "Resume" : "Pause", systemImage: state == .paused ? "play" : "pause") { model.pauseOrResume(machine) }
                     Button("Shut down", systemImage: "power") { model.stop(machine) }
