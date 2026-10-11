@@ -242,9 +242,13 @@ final class LibraryModel: ObservableObject {
 
     func showDisplay(_ record: VirtualMachineRecord) {
         guard let engine = appleEngines[record.id] else { return }
+        let guestIcon = GuestIconGenerator.icon(for: record.guest)
         if let window = guestWindows[record.id] {
             window.contentView = NSHostingView(rootView: GuestWindowView(engine: engine, record: record).environmentObject(self))
+            window.miniwindowImage = guestIcon
+            window.miniwindowTitle = record.name
             window.makeKeyAndOrderFront(nil)
+            NSApp.applicationIconImage = guestIcon
             return
         }
         let targetAspect = Double(record.displayWidth) / Double(max(1, record.displayHeight))
@@ -256,10 +260,43 @@ final class LibraryModel: ObservableObject {
         window.minSize = NSSize(width: 640, height: 440)
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.fullScreenPrimary]
+        window.miniwindowImage = guestIcon
+        window.miniwindowTitle = record.name
         window.contentView = NSHostingView(rootView: GuestWindowView(engine: engine, record: record).environmentObject(self))
         window.center()
         guestWindows[record.id] = window
         window.makeKeyAndOrderFront(nil)
+        NSApp.applicationIconImage = guestIcon
+
+        let recordID = record.id
+        let recordOS = record.operatingSystemName
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                NSApp.applicationIconImage = guestIcon
+                NSApp.dockTile.badgeLabel = recordOS
+            }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                MainActor.assumeIsolated {
+                    let keyWin = NSApp.keyWindow
+                    let isVMKey = self?.guestWindows.values.contains { $0 === keyWin } ?? false
+                    if !isVMKey {
+                        NSApp.applicationIconImage = nil
+                        NSApp.dockTile.badgeLabel = nil
+                    }
+                }
+            }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.guestWindows.removeValue(forKey: recordID)
+                if self?.guestWindows.isEmpty ?? true {
+                    NSApp.applicationIconImage = nil
+                    NSApp.dockTile.badgeLabel = nil
+                }
+            }
+        }
     }
 
     func reveal(_ record: VirtualMachineRecord) {
@@ -503,6 +540,55 @@ final class LibraryModel: ObservableObject {
     }
 }
 
+private struct MouseTopEdgeTracker: NSViewRepresentable {
+    var onHoverTop: (Bool) -> Void
+
+    func makeNSView(context: Context) -> TrackingView {
+        let view = TrackingView()
+        view.onHoverTop = onHoverTop
+        return view
+    }
+
+    func updateNSView(_ nsView: TrackingView, context: Context) {
+        nsView.onHoverTop = onHoverTop
+    }
+
+    class TrackingView: NSView {
+        var onHoverTop: ((Bool) -> Void)?
+        private var trackingAreaRef: NSTrackingArea?
+        private var isNearTop = false
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            // Return nil so mouse clicks and drags pass directly to the VM display view!
+            return nil
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let existing = trackingAreaRef { removeTrackingArea(existing) }
+            let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+            addTrackingArea(area)
+            trackingAreaRef = area
+        }
+
+        override func mouseMoved(with event: NSEvent) {
+            let loc = convert(event.locationInWindow, from: nil)
+            let nearTop = loc.y >= bounds.height - 48
+            if nearTop != isNearTop {
+                isNearTop = nearTop
+                onHoverTop?(nearTop)
+            }
+        }
+
+        override func mouseExited(with event: NSEvent) {
+            if isNearTop {
+                isNearTop = false
+                onHoverTop?(false)
+            }
+        }
+    }
+}
+
 private struct GuestWindowView: View {
     @ObservedObject var engine: AppleVirtualMachine
     let record: VirtualMachineRecord
@@ -510,91 +596,52 @@ private struct GuestWindowView: View {
     @State private var confirmForceStop = false
     @State private var showMountCopied = false
     @State private var showingTouchIDSheet = false
+    @State private var showControls = false
+    @State private var isHoveringHUD = false
+    @State private var isPinned = false
+    @State private var hideTask: Task<Void, Never>? = nil
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Circle().fill(engine.state == .running ? Color.green : Color.secondary).frame(width: 7, height: 7)
-                Text(engine.state.title).font(.callout)
-                if engine.state == .installing {
-                    ProgressView(value: engine.progress).frame(width: 160)
-                    Text(engine.progress, format: .percent.precision(.fractionLength(0))).monospacedDigit()
+        ZStack(alignment: .top) {
+            Color.black
+                .ignoresSafeArea()
+
+            GuestDisplayView(engine: engine)
+                .ignoresSafeArea()
+
+            if engine.state == .failed || engine.state == .stopped {
+                VStack(spacing: 14) {
+                    Image(systemName: engine.state == .failed ? "exclamationmark.triangle" : "power")
+                        .font(.system(size: 34))
+                    Text(engine.errorMessage ?? "This machine is shut down.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 480)
                 }
-
-                Text("\(record.displayWidth)×\(record.displayHeight)")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.white.opacity(0.06)))
-
-                if record.sharedDirectoryPath != nil, record.guest.isLinux {
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString("sudo mkdir -p /mnt/lumen && sudo mount -t virtiofs lumen /mnt/lumen", forType: .string)
-                        showMountCopied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showMountCopied = false }
-                    } label: {
-                        Label(showMountCopied ? "Command copied!" : "Copy mount cmd", systemImage: showMountCopied ? "checkmark" : "folder")
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-                    .help("Copies: sudo mkdir -p /mnt/lumen && sudo mount -t virtiofs lumen /mnt/lumen")
-                }
-
-                Spacer()
-
-                if record.installerPath != nil && engine.state == .stopped {
-                    Button("Eject installer", systemImage: "eject") {
-                        try? model.ejectInstaller(record)
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-                }
-
-                if engine.state == .running && model.hasTouchIDPassword(for: record) {
-                    Button {
-                        Task { await model.unlockWithTouchID(record) }
-                    } label: {
-                        Label("Touch ID", systemImage: "touchid")
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-                    .help("Unlock guest with Touch ID (⌘L)")
-                    .keyboardShortcut("l", modifiers: .command)
-                }
-
-                Button {
-                    showingTouchIDSheet = true
-                } label: {
-                    Image(systemName: "key.fill")
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 11))
-                .help("Configure Touch ID Password")
-
-                Button { model.pauseOrResume(record) } label: { Image(systemName: engine.state == .paused ? "play.fill" : "pause.fill") }
-                    .disabled(engine.state != .running && engine.state != .paused)
-                    .help(engine.state == .paused ? "Resume" : "Pause")
-
-                Menu {
-                    Button("Shut Down") { model.stop(record) }.disabled(engine.state != .running)
-                    Button("Force Stop…", role: .destructive) { confirmForceStop = true }.disabled(engine.state == .installing || !engine.state.isActive)
-                } label: { Image(systemName: "power") }.menuStyle(.borderlessButton).frame(width: 28)
+                .foregroundStyle(.white.opacity(0.8))
+                .padding(30)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-            .background(.bar)
 
-            ZStack {
-                Color.black
-                GuestDisplayView(engine: engine)
-                if engine.state == .failed || engine.state == .stopped {
-                    VStack(spacing: 14) {
-                        Image(systemName: engine.state == .failed ? "exclamationmark.triangle" : "power").font(.system(size: 34))
-                        Text(engine.errorMessage ?? "This machine is shut down.").multilineTextAlignment(.center).frame(maxWidth: 480)
-                    }.foregroundStyle(.white.opacity(0.8)).padding(30).background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+            // Top-edge tracking overlay that forwards all clicks directly to the guest
+            MouseTopEdgeTracker { nearTop in
+                if nearTop {
+                    hideTask?.cancel()
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        showControls = true
+                    }
+                } else if !isPinned && !isHoveringHUD {
+                    scheduleAutoHide()
                 }
+            }
+            .ignoresSafeArea()
+
+            // Floating auto-hiding control HUD
+            if showControls || isPinned {
+                floatingControlHUD
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.top, 10)
+                    .zIndex(100)
             }
         }
         .confirmationDialog("Force stop \(record.name)? Unsaved work in the guest will be lost.", isPresented: $confirmForceStop) {
@@ -602,6 +649,151 @@ private struct GuestWindowView: View {
         }
         .sheet(isPresented: $showingTouchIDSheet) {
             TouchIDSheet(machine: record).environmentObject(model)
+        }
+    }
+
+    private var floatingControlHUD: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(engine.state == .running ? Color.green : Color.secondary)
+                .frame(width: 7, height: 7)
+
+            Text(engine.state.title)
+                .font(.system(size: 12, weight: .medium))
+
+            if engine.state == .installing {
+                ProgressView(value: engine.progress)
+                    .frame(width: 120)
+                Text(engine.progress, format: .percent.precision(.fractionLength(0)))
+                    .font(.system(size: 11, design: .monospaced))
+            }
+
+            Text("\(record.displayWidth)×\(record.displayHeight)")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.white.opacity(0.08)))
+
+            if record.sharedDirectoryPath != nil, record.guest.isLinux {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("sudo mkdir -p /mnt/lumen && sudo mount -t virtiofs lumen /mnt/lumen", forType: .string)
+                    showMountCopied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { showMountCopied = false }
+                } label: {
+                    Label(showMountCopied ? "Copied!" : "Mount cmd", systemImage: showMountCopied ? "checkmark" : "folder")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .help("Copies: sudo mkdir -p /mnt/lumen && sudo mount -t virtiofs lumen /mnt/lumen")
+            }
+
+            Divider()
+                .frame(height: 14)
+                .opacity(0.3)
+
+            if record.installerPath != nil && engine.state == .stopped {
+                Button("Eject", systemImage: "eject") {
+                    try? model.ejectInstaller(record)
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11))
+            }
+
+            if engine.state == .running && model.hasTouchIDPassword(for: record) {
+                Button {
+                    Task { await model.unlockWithTouchID(record) }
+                } label: {
+                    Label("Touch ID", systemImage: "touchid")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .help("Unlock guest with Touch ID (⌘L)")
+                .keyboardShortcut("l", modifiers: .command)
+            }
+
+            Button {
+                showingTouchIDSheet = true
+            } label: {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.borderless)
+            .help("Configure Touch ID Password")
+
+            Button { model.pauseOrResume(record) } label: {
+                Image(systemName: engine.state == .paused ? "play.fill" : "pause.fill")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.borderless)
+            .disabled(engine.state != .running && engine.state != .paused)
+            .help(engine.state == .paused ? "Resume" : "Pause")
+
+            Menu {
+                Button("Shut Down") { model.stop(record) }.disabled(engine.state != .running)
+                Button("Force Stop…", role: .destructive) { confirmForceStop = true }.disabled(engine.state == .installing || !engine.state.isActive)
+            } label: {
+                Image(systemName: "power")
+                    .font(.system(size: 11))
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 22)
+
+            Divider()
+                .frame(height: 14)
+                .opacity(0.3)
+
+            // Pin / Unpin HUD button
+            Button {
+                withAnimation { isPinned.toggle() }
+            } label: {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 10))
+                    .foregroundStyle(isPinned ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(isPinned ? "Unpin controls (auto-hide)" : "Pin controls to stay visible")
+
+            // Toggle Full Screen button
+            Button {
+                if let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.title.contains(record.name) }) {
+                    window.toggleFullScreen(nil)
+                }
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Toggle Full Screen")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.16), lineWidth: 1))
+                .shadow(color: Color.black.opacity(0.35), radius: 8, y: 3)
+        )
+        .onHover { hovering in
+            isHoveringHUD = hovering
+            if hovering {
+                hideTask?.cancel()
+            } else if !isPinned {
+                scheduleAutoHide()
+            }
+        }
+    }
+
+    private func scheduleAutoHide() {
+        hideTask?.cancel()
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, !isHoveringHUD, !isPinned else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                showControls = false
+            }
         }
     }
 }

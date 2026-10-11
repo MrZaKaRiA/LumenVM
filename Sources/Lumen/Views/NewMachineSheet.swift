@@ -25,7 +25,7 @@ struct NewMachineSheet: View {
     @State private var displayResolutionIndex = 0
     @State private var displayWidth = 1920
     @State private var displayHeight = 1200
-    @State private var autoResizeDisplay = false
+    @State private var autoResizeDisplay = true
     @State private var clipboardSharing = true
     @State private var audioOutput = true
     @State private var microphone = false
@@ -69,7 +69,7 @@ struct NewMachineSheet: View {
         _displayHeight = State(initialValue: initialHeight)
         let matchIndex = Self.resolutions.firstIndex { $0.width == initialWidth && $0.height == initialHeight } ?? 0
         _displayResolutionIndex = State(initialValue: matchIndex)
-        _autoResizeDisplay = State(initialValue: machine?.autoResizeDisplay ?? (guest == .macOS))
+        _autoResizeDisplay = State(initialValue: machine?.autoResizeDisplay ?? true)
         _clipboardSharing = State(initialValue: machine?.clipboardSharing ?? true)
         _audioOutput = State(initialValue: machine?.audioOutput ?? true)
         _microphone = State(initialValue: machine?.microphone ?? false)
@@ -96,7 +96,7 @@ struct NewMachineSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.bottom, 20)
+                .padding(.bottom, 16)
 
             if configuring {
                 configurationView
@@ -104,13 +104,13 @@ struct NewMachineSheet: View {
                 osSelectionView
             }
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 8)
             Divider().overlay(LumenStyle.line)
-                .padding(.vertical, 14)
+                .padding(.vertical, 10)
             footer
         }
-        .padding(26)
-        .frame(minWidth: 860, idealWidth: 890, minHeight: 700, idealHeight: 730)
+        .padding(24)
+        .frame(minWidth: 840, idealWidth: 880, maxWidth: 920, minHeight: 520, idealHeight: 620, maxHeight: 720)
         .background { LumenBackground() }
         .preferredColorScheme(.dark)
         .alert(editingMachine == nil ? "Could not create machine" : "Could not save changes",
@@ -196,39 +196,43 @@ struct NewMachineSheet: View {
     // MARK: - Operating System Selection
 
     private var osSelectionView: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Select Operating System")
-                    .font(.system(size: 26, weight: .medium)).tracking(-0.8)
-                Text("Choose an operating system, or pick a specific Linux distribution below. Drop or select an installer to detect it automatically.")
-                    .font(.system(size: 12)).foregroundStyle(LumenStyle.secondary)
-            }
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Select Operating System")
+                        .font(.system(size: 24, weight: .medium)).tracking(-0.8)
+                    Text("Choose an operating system, or pick a specific Linux distribution below. Drop or select an installer to detect it automatically.")
+                        .font(.system(size: 12)).foregroundStyle(LumenStyle.secondary)
+                }
 
-            // Quick installer drop / select banner
-            installerDetectionBanner
+                // Quick installer drop / select banner
+                installerDetectionBanner
 
-            // Primary OS Cards
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
-                ForEach(primaryGuests) { guest in
-                    Button {
-                        selectedGuest = guest
-                        if guest != .ubuntu && guest != .debian && guest != .linux {
-                            selectedDistro = nil
-                        }
-                    } label: { guestCard(guest) }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(guest.title), \(guest.shortDescription)")
+                // Primary OS Cards
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+                    ForEach(primaryGuests) { guest in
+                        Button {
+                            selectedGuest = guest
+                            if guest != .ubuntu && guest != .debian && guest != .linux {
+                                selectedDistro = nil
+                            }
+                        } label: { guestCard(guest) }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(guest.title), \(guest.shortDescription)")
+                    }
+                }
+
+                // Linux Distribution Catalog section
+                if selectedGuest.isLinux {
+                    distroCatalogSection
+                } else if selectedGuest == .windows {
+                    windowsGuidanceSection
+                } else if selectedGuest == .macOS {
+                    macOSGuidanceSection
                 }
             }
-
-            // Linux Distribution Catalog section
-            if selectedGuest.isLinux {
-                distroCatalogSection
-            } else if selectedGuest == .windows {
-                windowsGuidanceSection
-            } else if selectedGuest == .macOS {
-                macOSGuidanceSection
-            }
+            .padding(.trailing, 2)
+            .padding(.bottom, 6)
         }
     }
 
@@ -383,7 +387,7 @@ struct NewMachineSheet: View {
                 }
                 .padding(.vertical, 2)
             }
-            .frame(minHeight: 280, maxHeight: 360)
+            .frame(minHeight: 180, maxHeight: 220)
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.02)))

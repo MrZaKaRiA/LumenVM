@@ -391,8 +391,12 @@ struct GuestDisplayView: NSViewRepresentable {
     func makeNSView(context: Context) -> VZVirtualMachineView {
         let view = VZVirtualMachineView()
         view.capturesSystemKeys = engine.record.captureSystemKeys
-        view.automaticallyReconfiguresDisplay = engine.record.autoResizeDisplay
+        view.automaticallyReconfiguresDisplay = true
         view.virtualMachine = engine.virtualMachine
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         return view
     }
 
@@ -401,6 +405,6 @@ struct GuestDisplayView: NSViewRepresentable {
             view.virtualMachine = engine.virtualMachine
         }
         view.capturesSystemKeys = engine.record.captureSystemKeys
-        view.automaticallyReconfiguresDisplay = engine.record.autoResizeDisplay
+        view.automaticallyReconfiguresDisplay = true
     }
 }

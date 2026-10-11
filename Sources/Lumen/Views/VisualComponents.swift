@@ -210,3 +210,81 @@ struct TinyLabel: View {
             .foregroundStyle(color)
     }
 }
+
+// MARK: - Dynamic Guest Dock Icon Generator
+
+@MainActor
+public enum GuestIconGenerator {
+    private static var iconCache: [GuestOS: NSImage] = [:]
+
+    public static func icon(for guest: GuestOS) -> NSImage {
+        if let cached = iconCache[guest] { return cached }
+
+        let iconView = ZStack {
+            RoundedRectangle(cornerRadius: 56, style: .continuous)
+                .fill(gradient(for: guest))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 56, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.22), lineWidth: 1.5)
+                )
+                .shadow(color: Color.black.opacity(0.35), radius: 10, y: 5)
+
+            GuestGlyph(guest: guest, size: 105)
+                .foregroundStyle(.white)
+                .shadow(color: Color.black.opacity(0.28), radius: 6, y: 3)
+        }
+        .frame(width: 256, height: 256)
+
+        let renderer = ImageRenderer(content: iconView)
+        renderer.scale = 2.0
+        let image = renderer.nsImage ?? NSImage()
+        iconCache[guest] = image
+        return image
+    }
+
+    private static func gradient(for guest: GuestOS) -> LinearGradient {
+        switch guest {
+        case .ubuntu:
+            return LinearGradient(
+                colors: [Color(red: 0.95, green: 0.40, blue: 0.13), Color(red: 0.46, green: 0.10, blue: 0.28)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        case .windows:
+            return LinearGradient(
+                colors: [Color(red: 0.05, green: 0.48, blue: 0.88), Color(red: 0.01, green: 0.22, blue: 0.58)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        case .macOS:
+            return LinearGradient(
+                colors: [Color(red: 0.35, green: 0.55, blue: 0.75), Color(red: 0.12, green: 0.22, blue: 0.42)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        case .debian:
+            return LinearGradient(
+                colors: [Color(red: 0.88, green: 0.15, blue: 0.32), Color(red: 0.45, green: 0.05, blue: 0.18)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        case .arch:
+            return LinearGradient(
+                colors: [Color(red: 0.12, green: 0.58, blue: 0.88), Color(red: 0.04, green: 0.22, blue: 0.45)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        case .voidLinux:
+            return LinearGradient(
+                colors: [Color(red: 0.38, green: 0.68, blue: 0.28), Color(red: 0.12, green: 0.32, blue: 0.12)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        case .linux:
+            return LinearGradient(
+                colors: [Color(red: 0.82, green: 0.68, blue: 0.32), Color(red: 0.35, green: 0.25, blue: 0.10)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        default:
+            return LinearGradient(
+                colors: [Color(red: 0.22, green: 0.32, blue: 0.42), Color(red: 0.10, green: 0.15, blue: 0.22)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        }
+    }
+}
+

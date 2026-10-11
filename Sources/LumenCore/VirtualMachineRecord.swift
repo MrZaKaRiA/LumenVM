@@ -137,7 +137,7 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
         let display = Self.defaultDisplay(for: guest)
         self.displayWidth = displayWidth ?? display.width
         self.displayHeight = displayHeight ?? display.height
-        self.autoResizeDisplay = autoResizeDisplay ?? guest.isMacOS
+        self.autoResizeDisplay = autoResizeDisplay ?? true
         self.clipboardSharing = clipboardSharing
         self.audioOutput = audioOutput
         self.microphone = microphone
