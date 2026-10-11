@@ -288,8 +288,7 @@ final class QEMUVirtualMachine: ObservableObject {
         let memMB = record.memoryGiB * 1024
         var arguments = [
             "-name", record.name.replacingOccurrences(of: ",", with: ",,"),
-            "-machine", "virt,highmem=on,gic-version=3,pflash0=uefi-code,pflash1=uefi-vars,memory-backend=mem0",
-            "-object", "memory-backend-ram,id=mem0,size=\(memMB)M,reserve=off",
+            "-machine", "virt,highmem=on,gic-version=3,pflash0=uefi-code,pflash1=uefi-vars",
             "-accel", "hvf", "-cpu", "host", "-smp", String(record.cpuCount),
             "-m", String(memMB),
             "-nodefaults", "-display", "cocoa,zoom-to-fit=on",
