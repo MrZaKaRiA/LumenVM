@@ -167,13 +167,15 @@ final class LibraryModel: ObservableObject {
                 defer { pending.remove(record.id); objectWillChange.send(); refreshUsage() }
                 do {
                     pending.remove(record.id)
+                    let isInstalled = ((try? SparseDisk.usage(at: location.disk).allocatedBytes) ?? 0) > 2_000_000_000 || FileManager.default.fileExists(atPath: location.installedMarker.path)
                     if record.guest.isMacOS && !FileManager.default.fileExists(atPath: location.installedMarker.path) {
                         guard let installer = record.installerPath else {
                             throw LibraryError.invalidConfiguration("This Mac needs an IPSW restore image before its first start.")
                         }
                         try await engine.installMacOS(restoreImageURL: URL(fileURLWithPath: installer))
                     } else {
-                        try await engine.start(bootInstaller: bootInstaller || (!record.guest.isMacOS && record.installerPath != nil))
+                        let shouldBootInstaller = bootInstaller || (!isInstalled && !record.guest.isMacOS && record.installerPath != nil)
+                        try await engine.start(bootInstaller: shouldBootInstaller)
                     }
                 } catch { errorMessage = error.localizedDescription }
             }
@@ -182,7 +184,9 @@ final class LibraryModel: ObservableObject {
             qemuEngines[record.id] = engine
             observations[record.id] = engine.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             errorObservations[record.id] = engine.$errorMessage.compactMap { $0 }.sink { [weak self] in self?.errorMessage = $0 }
-            do { try engine.start(bootInstaller: bootInstaller || record.installerPath != nil) }
+            let isInstalled = ((try? SparseDisk.usage(at: location.disk).allocatedBytes) ?? 0) > 2_000_000_000 || FileManager.default.fileExists(atPath: location.installedMarker.path)
+            let shouldBootInstaller = bootInstaller || (!isInstalled && record.installerPath != nil)
+            do { try engine.start(bootInstaller: shouldBootInstaller) }
             catch { errorMessage = error.localizedDescription }
         }
     }

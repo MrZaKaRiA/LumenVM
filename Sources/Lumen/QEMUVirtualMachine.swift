@@ -325,14 +325,16 @@ final class QEMUVirtualMachine: ObservableObject {
             arguments += ["-blockdev", try json(block)]
         }
         // Windows has a native NVMe storage driver. Virtio storage would need an extra ARM64 driver.
-        arguments += ["-device", "nvme,drive=disk,serial=LUMEN\(record.id.uuidString.replacingOccurrences(of: "-", with: "").prefix(12)),bootindex=1"]
-        if bootInstaller, let path = record.installerPath {
+        let nvmeBootIndex = bootInstaller ? 1 : 0
+        arguments += ["-device", "nvme,drive=disk,serial=LUMEN\(record.id.uuidString.replacingOccurrences(of: "-", with: "").prefix(12)),bootindex=\(nvmeBootIndex)"]
+        if let path = record.installerPath {
+            let installerBootIndex = bootInstaller ? 0 : 2
             arguments += ["-blockdev", try json([
                 "driver": "raw", "node-name": "installer", "read-only": true,
                 "file": ["driver": "file", "filename": path]
-            ]), "-device", "usb-bot,id=installer-usb", "-device", "scsi-cd,drive=installer,bus=installer-usb.0,bootindex=0"]
+            ]), "-device", "usb-bot,id=installer-usb", "-device", "scsi-cd,drive=installer,bus=installer-usb.0,bootindex=\(installerBootIndex)"]
         }
-        if bootInstaller, let setupMedia = try? prepareSetupMedia() {
+        if let setupMedia = try? prepareSetupMedia() {
             arguments += ["-blockdev", try json([
                 "driver": "raw", "node-name": "lumensetup", "read-only": true,
                 "file": ["driver": "file", "filename": setupMedia.path]
