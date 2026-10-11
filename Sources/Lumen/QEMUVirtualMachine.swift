@@ -292,7 +292,8 @@ final class QEMUVirtualMachine: ObservableObject {
             "-object", "memory-backend-ram,id=mem0,size=\(memMB)M,reserve=off",
             "-accel", "hvf", "-cpu", "host", "-smp", String(record.cpuCount),
             "-m", String(memMB),
-            "-nodefaults", "-display", "cocoa,zoom-to-fit=on", "-device", "ramfb",
+            "-nodefaults", "-display", "cocoa,zoom-to-fit=on",
+            "-device", "virtio-gpu-pci,edid=on,xres=\(record.displayWidth),yres=\(record.displayHeight)",
             "-fw_cfg", "name=opt/org.tianocore/X-GOP-Resolution,string=\(record.displayWidth)x\(record.displayHeight)",
             "-device", "qemu-xhci,id=usb", "-device", "usb-kbd", "-device", "usb-tablet",
             "-device", "virtio-balloon-pci"
