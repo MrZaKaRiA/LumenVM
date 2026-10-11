@@ -1,0 +1,16 @@
+.build/
+build/
+.DS_Store
+**/.DS_Store
+*.lumen/
+*.ipsw
+*.iso
+*.img
+*.qcow2
+xcuserdata/
+*.xcworkspace/
+*.xcodeproj/
+DerivedData/
+*.swp
+*~
+
