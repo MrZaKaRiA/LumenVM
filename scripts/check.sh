@@ -9,3 +9,6 @@ mkdir -p "$LUMEN_TEST_ROOT"
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/ModuleCache"
 swift test --disable-sandbox --build-system native --cache-path "$PWD/.build/cache" --config-path "$PWD/.build/config" --security-path "$PWD/.build/security"
+mkdir -p build
+clang -framework Foundation -framework CoreGraphics scripts/test-display-drawing.m -o build/test-display-drawing
+build/test-display-drawing

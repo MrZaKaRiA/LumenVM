@@ -9,7 +9,6 @@ struct TouchIDSheet: View {
 
     @State private var password = ""
     @State private var hasSaved = false
-    @State private var isUnlocking = false
     @State private var statusMessage: String?
     @State private var isError = false
 
@@ -34,12 +33,12 @@ struct TouchIDSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("Log into \(machine.operatingSystemName) using your Mac's Touch ID sensor or Apple Watch.")
+                Text("Log into \(machine.operatingSystemName) using Touch ID or your Mac password.")
                     .font(.system(size: 12))
                     .foregroundStyle(LumenStyle.secondary)
                     .lineSpacing(3)
 
-                Text("Your guest password is stored in the macOS Keychain, encrypted by the Apple Silicon Secure Enclave. When you verify with Touch ID, Lumen enters your password into the guest login screen automatically.")
+                Text("Newly saved passwords are protected by Keychain user-presence access control. Focus the guest password field before unlocking. Automatic typing requires a US guest keyboard layout and printable ASCII characters.")
                     .font(.system(size: 11))
                     .foregroundStyle(.white.opacity(0.4))
                     .lineSpacing(3)
@@ -90,11 +89,10 @@ struct TouchIDSheet: View {
 
                 if hasSaved && model.state(for: machine.id) == .running {
                     Button {
-                        isUnlocking = true
-                        statusMessage = nil
+                        dismiss()
                         Task {
+                            try? await Task.sleep(nanoseconds: 300_000_000)
                             await model.unlockWithTouchID(machine)
-                            isUnlocking = false
                         }
                     } label: {
                         HStack(spacing: 6) {
@@ -103,7 +101,6 @@ struct TouchIDSheet: View {
                         }
                     }
                     .buttonStyle(CapsuleButtonStyle(prominent: false))
-                    .disabled(isUnlocking)
                 }
 
                 Button {

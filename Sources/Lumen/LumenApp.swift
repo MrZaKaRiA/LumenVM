@@ -8,25 +8,90 @@ import LumenCore
 struct LumenApp: App {
     @NSApplicationDelegateAdaptor(LumenDelegate.self) private var delegate
     @StateObject private var model = LibraryModel()
+    @AppStorage("autoStartMachines") private var autoStartMachines = true
     var body: some Scene {
         WindowGroup("Lumen", id: "library") {
-            LibraryView()
-                .environmentObject(model)
-                .frame(minWidth: 860, minHeight: 620)
-                .background(WindowChrome())
-                .preferredColorScheme(.dark)
-                .onAppear { delegate.attach(model) }
+            if model.isGuestProcess {
+                Color.clear
+                    .frame(width: 1, height: 1)
+                    .onAppear {
+                        delegate.attach(model)
+                        DispatchQueue.main.async {
+                            if let bootstrap = NSApp.windows.first(where: { $0.title == "Lumen" }) {
+                                bootstrap.isExcludedFromWindowsMenu = true
+                                bootstrap.orderOut(nil)
+                            }
+                        }
+                    }
+            } else {
+                LibraryView()
+                    .environmentObject(model)
+                    .frame(minWidth: 860, minHeight: 620)
+                    .background(WindowChrome())
+                    .preferredColorScheme(.dark)
+                    .onAppear { delegate.attach(model) }
+            }
         }
         .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1060, height: 760)
+        .defaultSize(width: model.isGuestProcess ? 1 : 1060, height: model.isGuestProcess ? 1 : 760)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Virtual Machine…") { NotificationCenter.default.post(name: .newMachineRequested, object: nil) }
-                    .keyboardShortcut("n")
+                if model.isGuestProcess {
+                    Button("Open Lumen Library") { model.showLibrary() }.keyboardShortcut("l")
+                } else {
+                    Button("New Virtual Machine…") { NotificationCenter.default.post(name: .newMachineRequested, object: nil) }
+                        .keyboardShortcut("n")
+                }
+            }
+            CommandGroup(after: .pasteboard) {
+                Button("Paste into Linux Terminal") {
+                    NSApp.sendAction(#selector(GuestVirtualMachineView.pasteInGuestTerminal(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .disabled(model.focusedGuestClipboardView == nil)
+                Toggle("Use Terminal Copy/Paste Shortcuts", isOn: Binding(
+                    get: { model.focusedGuestClipboardView?.terminalShortcuts ?? false },
+                    set: { model.focusedGuestClipboardView?.terminalShortcuts = $0 }
+                ))
+                .disabled(model.focusedGuestClipboardView == nil)
             }
             CommandGroup(after: .appInfo) {
                 Button("Show Machine Library in Finder") {
                     NSWorkspace.shared.open(model.libraryURL)
+                }
+            }
+            CommandMenu("Virtual Machine") {
+                if let machine = model.machines.first(where: { $0.id == model.selectedID }) {
+                    Button("Start / Show Display") { model.start(machine) }
+                    Button(model.state(for: machine.id) == .paused ? "Resume" : "Pause") { model.pauseOrResume(machine) }
+                        .disabled(![.running, .paused].contains(model.state(for: machine.id)))
+                    Button("Shut Down") { model.stop(machine) }
+                        .disabled(![.running, .paused].contains(model.state(for: machine.id)))
+                    Button("Settings…") { model.requestSettings(for: machine) }
+                    if machine.guest == .windows {
+                        Button("Connect / Open Shared Folders…") { model.connectWindowsFolders(machine) }
+                            .disabled(model.state(for: machine.id) != .running || machine.sharedFolders.isEmpty)
+                        Button("Install / Repair Guest Tools…") { model.installWindowsDrivers(machine) }
+                            .disabled(model.state(for: machine.id) != .running)
+                        if machine.windowsCompatibilityDisplay {
+                            Button("Enable Retina Display After Installing Drivers…") { model.enableWindowsRetinaDisplay(machine) }
+                                .disabled(model.state(for: machine.id).isActive && model.state(for: machine.id) != .running)
+                        }
+                    }
+                    Button("Show Machine in Finder") { model.reveal(machine) }
+                    if machine.guest.usesAppleVirtualization && !machine.guest.isMacOS {
+                        Button("Install / Repair Linux Guest Tools…") { model.installLinuxTools(machine) }
+                            .disabled(model.state(for: machine.id) != .running)
+                    }
+                    Button("Send Files to Shared Folder…") { model.sendFiles(machine) }
+                        .disabled(!machine.sharedFolders.contains { !$0.readOnly })
+                    Divider()
+                }
+                if !model.isGuestProcess {
+                    Button("Start All Machines") { model.startAll() }.disabled(model.machines.isEmpty)
+                    Button("Shut Down All Machines") { model.stopAll() }.disabled(!model.hasActiveMachines)
+                    Divider()
+                    Toggle("Start Machines When Lumen Opens", isOn: $autoStartMachines)
                 }
             }
         }
@@ -35,6 +100,7 @@ struct LumenApp: App {
 
 extension Notification.Name {
     static let newMachineRequested = Notification.Name("LumenNewMachineRequested")
+    static let machineSettingsRequested = Notification.Name("LumenMachineSettingsRequested")
 }
 
 private struct WindowChrome: NSViewRepresentable {
@@ -42,6 +108,8 @@ private struct WindowChrome: NSViewRepresentable {
         let view = NSView()
         DispatchQueue.main.async {
             guard let window = view.window else { return }
+            window.tabbingMode = .disallowed
+            window.tabbingIdentifier = "Lumen.Library"
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
@@ -57,6 +125,7 @@ private struct WindowChrome: NSViewRepresentable {
 final class LumenDelegate: NSObject, NSApplicationDelegate {
     private weak var model: LibraryModel?
     private var attached = false
+    private var diagnosticsStarted = false
     private var diagnosticEngine: AppleVirtualMachine?
     private var diagnosticQEMU: QEMUVirtualMachine?
 
@@ -64,10 +133,21 @@ final class LumenDelegate: NSObject, NSApplicationDelegate {
         // Direct launches of the app executable need a foreground application policy
         // before SwiftUI presents its first scene.
         NSApp.setActivationPolicy(.regular)
+        NSWindow.allowsAutomaticWindowTabbing = false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.activate(ignoringOtherApps: true)
+        model?.refreshGuestDockIcon()
+        // Boot diagnostics must not depend on the library window becoming visible. macOS can
+        // defer that SwiftUI callback when several test instances launch close together.
+        if ["--windows-boot-test", "--boot-test", "--smoke-test"].contains(where: CommandLine.arguments.contains) {
+            beginDiagnostics()
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        model?.refreshGuestDockIcon()
     }
 
     func attach(_ model: LibraryModel) {
@@ -76,6 +156,13 @@ final class LumenDelegate: NSObject, NSApplicationDelegate {
         attached = true
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        beginDiagnostics()
+        model.startAutomaticallyIfEnabled()
+    }
+
+    private func beginDiagnostics() {
+        guard !diagnosticsStarted else { return }
+        diagnosticsStarted = true
         if CommandLine.arguments.contains("--windows-boot-test") {
             Task { await windowsBootTest(installerPath: argument(after: "--windows-boot-test")) }
         } else if CommandLine.arguments.contains("--boot-test") {
@@ -104,12 +191,27 @@ final class LumenDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard model?.hasActiveMachines == true || diagnosticEngine?.state.isActive == true || diagnosticQEMU?.isProcessRunning == true else { return .terminateNow }
+        if model?.isGuestProcess == true, let machine = model?.machines.first {
+            let alert = NSAlert()
+            alert.messageText = "Shut down \(machine.name) before closing?"
+            alert.informativeText = "The VM will shut down normally so it can save its work. Lumen's library stays open."
+            alert.addButton(withTitle: "Keep VM Open")
+            if model?.state(for: machine.id) != .installing { alert.addButton(withTitle: "Shut Down VM") }
+            if alert.runModal() == .alertSecondButtonReturn { model?.closeGuestApplication() }
+            return .terminateCancel
+        }
         let alert = NSAlert()
         alert.messageText = "Your virtual machines are still active"
         alert.informativeText = "Shut down your guests before quitting Lumen so their work is saved. A paused machine still uses memory."
         alert.addButton(withTitle: "Keep Lumen Open")
         alert.runModal()
         return .terminateCancel
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard let model, model.isGuestProcess, let machine = model.machines.first else { return true }
+        model.showDisplay(machine)
+        return false
     }
 
     private func argument(after flag: String) -> String? {
@@ -181,7 +283,9 @@ final class LumenDelegate: NSObject, NSApplicationDelegate {
             let library = try MachineLibrary(root: directory)
             let record = VirtualMachineRecord(name: "Temporary Windows boot test", guest: .windows,
                                               cpuCount: 4, memoryGiB: 8, diskGiB: 64,
-                                              installerPath: installerPath)
+                                              installerPath: installerPath,
+                                              windowsTPM: !CommandLine.arguments.contains("--boot-no-tpm"),
+                                              windowsCompatibilityDisplay: CommandLine.arguments.contains("--boot-compatibility-display"))
             try library.create(record)
             let location = library.location(for: record.id)
             testLocation = location
@@ -191,9 +295,13 @@ final class LumenDelegate: NSObject, NSApplicationDelegate {
 
             let engine = QEMUVirtualMachine(record: record, location: location)
             diagnosticQEMU = engine
-            try engine.start(bootInstaller: true)
+            try await engine.start(bootInstaller: true)
             try await waitForQEMU(engine, state: .running, timeout: 30)
             report["start"] = "passed"
+            report["runtimeConfiguration"] = try await engine.diagnosticStatus()
+            if CommandLine.arguments.contains("--boot-menu-test") {
+                report["menuIntegration"] = try await engine.testMenuIntegration()
+            }
             let startedAt = Date()
             for waitedSeconds in 1...bootWait {
                 try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -201,7 +309,7 @@ final class LumenDelegate: NSObject, NSApplicationDelegate {
                     throw LibraryError.invalidConfiguration(engine.errorMessage ?? "QEMU stopped before the boot observation period finished.")
                 }
                 // Windows media prompts for a key before entering Setup. Space only accepts that boot prompt.
-                if waitedSeconds == 3 || waitedSeconds == 6 {
+                if [3, 6, 15, 30, 45, 60].contains(waitedSeconds) {
                     do {
                         try await engine.sendBootKey()
                         report["bootKeyAt\(waitedSeconds)Seconds"] = "sent"

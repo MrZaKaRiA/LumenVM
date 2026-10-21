@@ -257,7 +257,12 @@ final class AppleVirtualMachine: NSObject, ObservableObject, VZVirtualMachineDel
             }
         }
 
-        let syncMode: VZDiskImageSynchronizationMode = (record.diskSyncMode == .safest) ? .full : .none
+        let syncMode: VZDiskImageSynchronizationMode
+        switch record.diskSyncMode {
+        case .balanced: syncMode = .fsync
+        case .safest: syncMode = .full
+        case .fastest: syncMode = .none
+        }
         let cachingMode: VZDiskImageCachingMode = (record.diskSyncMode == .fastest) ? .cached : .automatic
         let diskAttachment = try VZDiskImageStorageDeviceAttachment(url: location.disk, readOnly: false, cachingMode: cachingMode, synchronizationMode: syncMode)
         configuration.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)]
@@ -295,15 +300,30 @@ final class AppleVirtualMachine: NSObject, ObservableObject, VZVirtualMachineDel
             configuration.audioDevices = [sound]
         }
 
-        if let path = record.sharedDirectoryPath {
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
-                throw EngineError.message("The shared folder is missing. Restore it or remove the folder from this VM's settings.")
+        if !record.guest.isMacOS {
+            let toolsURL = location.directory.appendingPathComponent("GuestTools", isDirectory: true)
+            try FileManager.default.createDirectory(at: toolsURL, withIntermediateDirectories: true)
+            for (name, script) in LinuxGuestTools.files(sharedFolders: !record.sharedFolders.isEmpty) {
+                try Data(script.utf8).write(to: toolsURL.appendingPathComponent(name), options: .atomic)
+            }
+            let tools = VZVirtioFileSystemDeviceConfiguration(tag: LinuxGuestTools.tag)
+            tools.share = VZSingleDirectoryShare(directory: VZSharedDirectory(url: toolsURL, readOnly: true))
+            configuration.directorySharingDevices.append(tools)
+        }
+        if !record.sharedFolders.isEmpty {
+            var directories: [String: VZSharedDirectory] = [:]
+            for share in SharedFolder.named(record.sharedFolders) {
+                try LocalFileSelection.validateFolder(URL(fileURLWithPath: share.folder.path))
+                directories[share.name] = VZSharedDirectory(url: URL(fileURLWithPath: share.folder.path), readOnly: share.folder.readOnly)
             }
             let tag = record.guest.isMacOS ? VZVirtioFileSystemDeviceConfiguration.macOSGuestAutomountTag : "lumen"
             let fileSystem = VZVirtioFileSystemDeviceConfiguration(tag: tag)
-            fileSystem.share = VZSingleDirectoryShare(directory: VZSharedDirectory(url: URL(fileURLWithPath: path), readOnly: record.sharedFolderReadOnly))
-            configuration.directorySharingDevices = [fileSystem]
+            if record.sharedFolders.count == 1, let directory = directories.values.first {
+                fileSystem.share = VZSingleDirectoryShare(directory: directory)
+            } else {
+                fileSystem.share = VZMultipleDirectoryShare(directories: directories)
+            }
+            configuration.directorySharingDevices.append(fileSystem)
         }
 
         try configuration.validate()
@@ -389,9 +409,11 @@ struct GuestDisplayView: NSViewRepresentable {
     @ObservedObject var engine: AppleVirtualMachine
 
     func makeNSView(context: Context) -> VZVirtualMachineView {
-        let view = VZVirtualMachineView()
+        let view = GuestVirtualMachineView()
+        view.guestRecord = engine.record
+        view.guestIsRunning = engine.state == .running
         view.capturesSystemKeys = engine.record.captureSystemKeys
-        view.automaticallyReconfiguresDisplay = true
+        view.automaticallyReconfiguresDisplay = engine.record.autoResizeDisplay
         view.virtualMachine = engine.virtualMachine
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
         view.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -404,7 +426,11 @@ struct GuestDisplayView: NSViewRepresentable {
         if view.virtualMachine !== engine.virtualMachine {
             view.virtualMachine = engine.virtualMachine
         }
+        if let guest = view as? GuestVirtualMachineView {
+            guest.guestRecord = engine.record
+            guest.guestIsRunning = engine.state == .running
+        }
         view.capturesSystemKeys = engine.record.captureSystemKeys
-        view.automaticallyReconfiguresDisplay = true
+        view.automaticallyReconfiguresDisplay = engine.record.autoResizeDisplay
     }
 }

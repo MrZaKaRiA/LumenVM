@@ -69,11 +69,27 @@ public final class MachineLibrary {
         try record.validate()
         let url = location(for: record.id).configuration
         guard FileManager.default.fileExists(atPath: url.path) else { throw LibraryError.missingMachine }
+        let lease = try GuestRuntimeLease(directory: location(for: record.id).directory)
+        defer { withExtendedLifetime(lease) {} }
         try encode(record).write(to: url, options: .atomic)
+    }
+    /// Deletes only this library's UUID-named machine bundle. The installer is a
+    /// reference to an external file and is never part of the deletion target.
+    public func deletePermanently(_ id: UUID) throws {
+        let directory = location(for: id).directory
+        guard FileManager.default.fileExists(atPath: directory.path) else { throw LibraryError.missingMachine }
+        let lease = try GuestRuntimeLease(directory: directory)
+        defer { withExtendedLifetime(lease) {} }
+        try FileManager.default.removeItem(at: directory)
     }
     /// Grows the sparse disk's logical size. Shrinking is refused because it would destroy guest data.
     /// The guest must extend its own partition afterwards.
     public func growDisk(for id: UUID, toGiB capacity: Int) throws {
+        guard (8...8192).contains(capacity) else {
+            throw LibraryError.invalidConfiguration("Disk capacity must be between 8 and 8192 GiB.")
+        }
+        let lease = try GuestRuntimeLease(directory: location(for: id).directory)
+        defer { withExtendedLifetime(lease) {} }
         let disk = location(for: id).disk
         let current = try SparseDisk.usage(at: disk).capacityBytes
         let requested = Int64(capacity) * 1_073_741_824

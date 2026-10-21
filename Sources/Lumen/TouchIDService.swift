@@ -23,31 +23,44 @@ public final class TouchIDService {
     }
 
     public func hasSavedPassword(for machineID: UUID) -> Bool {
+        let context = LAContext()
+        context.interactionNotAllowed = true
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: machineID.uuidString,
-            kSecReturnData as String: false
+            kSecReturnAttributes as String: true,
+            kSecUseAuthenticationContext as String: context
         ]
         let status = SecItemCopyMatching(query as CFDictionary, nil)
-        return status == errSecSuccess
+        return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
     public func savePassword(_ password: String, for machineID: UUID) throws {
         guard let data = password.data(using: .utf8) else { return }
 
-        // Remove any existing entry first
-        deletePassword(for: machineID)
+        var error: Unmanaged<CFError>?
+        guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+                                                          .userPresence, &error) else {
+            throw error?.takeRetainedValue() as Error? ?? NSError(domain: "LumenTouchID", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Could not create Keychain access control."])
+        }
 
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: machineID.uuidString,
+            kSecAttrAccount as String: machineID.uuidString
+        ]
+        let attributes: [String: Any] = [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccessControl as String: access
         ]
 
-        let status = SecItemAdd(query as CFDictionary, nil)
+        // Update in place: a failed update must not erase the user's previous credential.
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
+        }
         guard status == errSecSuccess else {
             throw NSError(domain: "LumenTouchID", code: Int(status), userInfo: [
                 NSLocalizedDescriptionKey: "Could not save guest password in macOS Keychain (error \(status))."
@@ -88,6 +101,7 @@ public final class TouchIDService {
             kSecAttrService as String: serviceName,
             kSecAttrAccount as String: machineID.uuidString,
             kSecReturnData as String: true,
+            kSecUseAuthenticationContext as String: context,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
 

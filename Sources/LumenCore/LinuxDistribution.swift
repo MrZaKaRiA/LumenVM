@@ -24,7 +24,8 @@ public struct LinuxDistribution: Identifiable, Hashable {
     /// The backend profile and defaults this distribution uses.
     public let family: GuestOS
     public let support: ARMSupport
-    public let downloadURL: URL
+    /// Official download page; nil for locally built distributions without a public page.
+    public let downloadURL: URL?
     public let summary: String
     /// Lowercased tokens matched against installer filenames and ISO volume labels.
     public let keywords: [String]
@@ -33,13 +34,13 @@ public struct LinuxDistribution: Identifiable, Hashable {
     public var recommendedMemoryGiB: Int { desktop ? 8 : 4 }
     public var recommendedDiskGiB: Int { desktop ? 64 : 32 }
 
-    init(_ id: String, _ name: String, _ family: GuestOS, _ support: ARMSupport, _ url: String,
+    init(_ id: String, _ name: String, _ family: GuestOS, _ support: ARMSupport, _ url: String?,
          _ summary: String, keywords: [String], desktop: Bool = true) {
         self.id = id
         self.name = name
         self.family = family
         self.support = support
-        self.downloadURL = URL(string: url)!
+        self.downloadURL = url.map { URL(string: $0)! }
         self.summary = summary
         self.keywords = keywords
         self.desktop = desktop
@@ -49,6 +50,10 @@ public struct LinuxDistribution: Identifiable, Hashable {
 
     /// Ordered from most to least specific so flavours win over their parent distribution.
     public static let catalog: [LinuxDistribution] = [
+        // Abyss is built on Void; it must precede "void" so its ISOs (ABYSS_LIVE, abyss-*.iso,
+        // and older void-suckless-* dev builds) are not recognized as plain Void.
+        .init("abyss", "Abyss Linux", .abyssLinux, .official, nil,
+              "Void-based dwm/st/dmenu desktop with an aarch64 UEFI live ISO.", keywords: ["abyss", "abyss_live", "abysslinux", "abyss-linux", "void-suckless"]),
         .init("ubuntu-server", "Ubuntu Server", .ubuntu, .official, "https://ubuntu.com/download/server/arm",
               "Lightweight server install with optional desktop later.", keywords: ["live-server", "ubuntu-server", "ubuntu server"], desktop: false),
         .init("kubuntu", "Kubuntu", .ubuntu, .limited, "https://kubuntu.org/getkubuntu/",

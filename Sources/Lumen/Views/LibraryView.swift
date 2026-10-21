@@ -4,12 +4,18 @@ import LumenCore
 
 struct LibraryView: View {
     @EnvironmentObject private var model: LibraryModel
-    @State private var showingNewMachine = false
+    private struct NewMachineRequest: Identifiable {
+        let id = UUID()
+        var installer: URL?
+    }
+    @State private var newMachineRequest: NewMachineRequest?
     @State private var showingCompatibility = false
     @State private var machineToRemove: VirtualMachineRecord?
+    @State private var machineToErase: VirtualMachineRecord?
     @State private var machineToForceStop: VirtualMachineRecord?
     @State private var machineToEdit: VirtualMachineRecord?
     @State private var machineForTouchID: VirtualMachineRecord?
+    @AppStorage("autoStartMachines") private var autoStartMachines = true
 
     private var allocatedBytes: Int64 {
         model.machines.reduce(0) { $0 + model.allocatedBytes(for: $1.id) }
@@ -38,7 +44,7 @@ struct LibraryView: View {
             .padding(.bottom, 22)
 
             if model.machines.isEmpty {
-                EmptyLibraryView { showingNewMachine = true }
+                EmptyLibraryView { newMachineRequest = NewMachineRequest() }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
@@ -60,7 +66,12 @@ struct LibraryView: View {
         .background { LumenBackground() }
         .preferredColorScheme(.dark)
         .frame(minWidth: 860, minHeight: 620)
-        .sheet(isPresented: $showingNewMachine) { NewMachineSheet().environmentObject(model) }
+        .installerDrop { url in
+            newMachineRequest = NewMachineRequest(installer: url)
+        } failed: { model.errorMessage = $0 }
+        .sheet(item: $newMachineRequest) { request in
+            NewMachineSheet(installer: request.installer).environmentObject(model)
+        }
         .sheet(isPresented: $showingCompatibility) { CompatibilitySheet() }
         .sheet(item: $machineToEdit) { machine in NewMachineSheet(machine: machine).environmentObject(model) }
         .sheet(item: $machineForTouchID) { machine in TouchIDSheet(machine: machine).environmentObject(model) }
@@ -69,15 +80,30 @@ struct LibraryView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
-        .confirmationDialog("Move \(machineToRemove?.name ?? "this machine") to Trash?", isPresented: Binding(get: { machineToRemove != nil }, set: { if !$0 { machineToRemove = nil } }), titleVisibility: .visible) {
+        .confirmationDialog("Remove \(machineToRemove?.name ?? "this machine")?", isPresented: Binding(get: { machineToRemove != nil }, set: { if !$0 { machineToRemove = nil } }), titleVisibility: .visible) {
             Button("Move to Trash", role: .destructive) {
                 guard let machine = machineToRemove else { return }
                 do { try model.remove(machine) } catch { model.errorMessage = error.localizedDescription }
                 machineToRemove = nil
             }
+            Button("Delete Permanently…", role: .destructive) {
+                let machine = machineToRemove
+                machineToRemove = nil
+                DispatchQueue.main.async { machineToErase = machine }
+            }
             Button("Cancel", role: .cancel) { machineToRemove = nil }
         } message: {
-            Text("This moves the virtual machine and its disk to the Trash. Your original installer is kept.")
+            Text("Moving to Trash keeps the disk on your SSD until Trash is emptied. Permanent deletion releases its space immediately. Your original installer is kept.")
+        }
+        .alert("Permanently delete \(machineToErase?.name ?? "this machine")?", isPresented: Binding(get: { machineToErase != nil }, set: { if !$0 { machineToErase = nil } })) {
+            Button("Delete VM and Disk Permanently", role: .destructive) {
+                guard let machine = machineToErase else { return }
+                do { try model.remove(machine, permanently: true) } catch { model.errorMessage = error.localizedDescription }
+                machineToErase = nil
+            }
+            Button("Cancel", role: .cancel) { machineToErase = nil }
+        } message: {
+            Text("This cannot be undone. The VM currently uses \(ByteCountFormatter.string(fromByteCount: machineToErase.map { model.allocatedBytes(for: $0.id) } ?? 0, countStyle: .file)) on your Mac. The original installer file is kept.")
         }
         .confirmationDialog("Force stop \(machineToForceStop?.name ?? "this machine")?", isPresented: Binding(get: { machineToForceStop != nil }, set: { if !$0 { machineToForceStop = nil } }), titleVisibility: .visible) {
             Button("Force Stop", role: .destructive) {
@@ -88,7 +114,11 @@ struct LibraryView: View {
         } message: {
             Text("Unsaved work in the guest will be lost. Shut down from inside the guest when possible.")
         }
-        .onReceive(NotificationCenter.default.publisher(for: .newMachineRequested)) { _ in showingNewMachine = true }
+        .onReceive(NotificationCenter.default.publisher(for: .newMachineRequested)) { _ in newMachineRequest = NewMachineRequest() }
+        .onReceive(NotificationCenter.default.publisher(for: .machineSettingsRequested)) { notification in
+            guard let id = notification.object as? UUID else { return }
+            machineToEdit = model.machines.first { $0.id == id }
+        }
     }
 
     private var header: some View {
@@ -111,6 +141,8 @@ struct LibraryView: View {
                     .buttonStyle(CapsuleButtonStyle())
             }
             Menu {
+                Toggle("Start machines when Lumen opens", isOn: $autoStartMachines)
+                Divider()
                 if !model.machines.isEmpty {
                     Button("Start all virtual machines", systemImage: "play.circle") { model.startAll() }
                     Button("Stop all virtual machines", systemImage: "power") { model.stopAll() }
@@ -132,7 +164,7 @@ struct LibraryView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .help("Library options")
-            Button { showingNewMachine = true } label: {
+            Button { newMachineRequest = NewMachineRequest() } label: {
                 Label("New machine", systemImage: "plus")
             }
             .buttonStyle(CapsuleButtonStyle(prominent: true))
@@ -330,7 +362,7 @@ private struct MachineRow: View {
                 .help(state == .running ? "Pause \(machine.name)" : state == .paused ? "Resume \(machine.name)" : "Start \(machine.name)")
             }
             Menu {
-                if state.isActive && machine.guest.usesAppleVirtualization {
+                if state.isActive {
                     Button("Show display", systemImage: "display") { model.showDisplay(machine) }
                 }
                 if state == .running && model.hasTouchIDPassword(for: machine) {
@@ -338,6 +370,22 @@ private struct MachineRow: View {
                         Task { await model.unlockWithTouchID(machine) }
                     }
                 }
+                if machine.guest == .windows {
+                    Button("Connect / open shared folders…", systemImage: "folder") { model.connectWindowsFolders(machine) }
+                        .disabled(state != .running || machine.sharedFolders.isEmpty)
+                    Button("Install / repair Windows drivers…", systemImage: "shippingbox") { model.installWindowsDrivers(machine) }
+                        .disabled(state != .running)
+                    if machine.windowsCompatibilityDisplay {
+                        Button("Enable Retina display after installing drivers…", systemImage: "display") { model.enableWindowsRetinaDisplay(machine) }
+                            .disabled(state.isActive && state != .running)
+                    }
+                }
+                if machine.guest.usesAppleVirtualization && !machine.guest.isMacOS {
+                    Button("Install / repair Linux guest tools…", systemImage: "shippingbox") { model.installLinuxTools(machine) }
+                        .disabled(state != .running)
+                }
+                Button("Send files to shared folder…", systemImage: "arrow.up.doc") { model.sendFiles(machine) }
+                    .disabled(!machine.sharedFolders.contains { !$0.readOnly })
                 Button("Touch ID login…", systemImage: "touchid", action: onConfigureTouchID)
                 if state == .running || state == .paused {
                     Button(state == .paused ? "Resume" : "Pause", systemImage: state == .paused ? "play" : "pause") { model.pauseOrResume(machine) }
@@ -356,7 +404,7 @@ private struct MachineRow: View {
                         do { try model.ejectInstaller(machine) } catch { model.errorMessage = error.localizedDescription }
                     }
                 }
-                Button("Settings…", systemImage: "slider.horizontal.3", action: onEdit).disabled(state.isActive)
+                Button("Settings…", systemImage: "slider.horizontal.3", action: onEdit)
                 Button("Show in Finder", systemImage: "folder") { model.reveal(machine) }
                 Divider()
                 Button("Move to Trash", role: .destructive, action: onRemove).disabled(state.isActive)
@@ -372,6 +420,9 @@ private struct MachineRow: View {
         }
         .padding(.horizontal, 21)
         .padding(.vertical, 22)
+        .guestFilesDrop(enabled: machine.sharedFolders.contains { !$0.readOnly }) {
+            model.sendFiles(machine, sources: $0)
+        } failed: { model.errorMessage = $0 }
         .background {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(Color.white.opacity(selected ? 0.085 : hovered ? 0.055 : 0.025))
@@ -384,7 +435,7 @@ private struct MachineRow: View {
         .onTapGesture(count: 2) {
             model.selectedID = machine.id
             if state.isActive {
-                if machine.guest.usesAppleVirtualization { model.showDisplay(machine) }
+                model.showDisplay(machine)
             } else { model.start(machine) }
         }
         .onTapGesture { model.selectedID = machine.id }
@@ -428,7 +479,7 @@ struct CompatibilitySheet: View {
                 Divider().overlay(LumenStyle.line).padding(.vertical, 15)
                 compatibilityRow(.ubuntu, title: "Linux", detail: "ARM64 UEFI guests with VirtIO graphics and networking. Dynamic display resizing needs a supported guest driver. Arch and Void may need a prepared ARM64 UEFI installer.", status: "NATIVE")
                 Divider().overlay(LumenStyle.line).padding(.vertical, 15)
-                compatibilityRow(.windows, title: "Windows on ARM", detail: "Experimental QEMU backend with a separate display window. Requires local QEMU and ARM64 media. Automatic resizing, shared clipboard, and a virtual TPM are not included.", status: "EXPERIMENTAL")
+                compatibilityRow(.windows, title: "Windows on ARM", detail: "QEMU + HVF with persistent TPM 2.0 via swtpm. ARM64 VirtIO drivers enable network and 2D display; guest scaling makes Retina text readable. Resizing depends on drivers. Text clipboard requires Lumen guest tools; live validation is pending. Direct3D and Secure Boot are not implemented.", status: "EXPERIMENTAL")
             }
             .padding(21)
             .background(RoundedRectangle(cornerRadius: 18).fill(Color.white.opacity(0.035)))

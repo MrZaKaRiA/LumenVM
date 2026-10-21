@@ -2,6 +2,81 @@ import XCTest
 @testable import LumenCore
 
 final class DetectionAndPolicyTests: XCTestCase {
+    func testDisplayReceiptRejectsStalePartialAndAppendedMessages() throws {
+        let setup = WindowsDisplaySetup(password: "test", share: "LumenSetup_test$", ticket: UUID().uuidString)
+        XCTAssertTrue(setup.acceptsReceipt(Data(setup.ticket.utf8)))
+        XCTAssertFalse(setup.acceptsReceipt(Data(UUID().uuidString.utf8)))
+        XCTAssertFalse(setup.acceptsReceipt(Data(setup.ticket.dropLast().utf8)))
+        XCTAssertFalse(setup.acceptsReceipt(Data((setup.ticket + "extra").utf8)))
+        XCTAssertFalse(setup.acceptsReceipt(Data()))
+        let files = WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: nil, displaySetup: setup)
+        XCTAssertEqual(files.first { $0.relativePath == "lumen/display-ready.ps1" }?.contents, setup.script)
+        let configuration = try XCTUnwrap(files.first { $0.relativePath == "lumen/display-setup.json" }).contents
+        let restored = try JSONDecoder().decode(WindowsDisplaySetup.self, from: Data(configuration.utf8))
+        XCTAssertEqual(restored.ticket, setup.ticket)
+        XCTAssertEqual(restored.password, setup.password)
+        // A new host launch updates only data on the disc; the protected task
+        // keeps the same code and cannot execute a replacement CD script.
+        let relaunched = WindowsDisplaySetup(password: "different", share: "different", ticket: UUID().uuidString)
+        XCTAssertEqual(setup.script, relaunched.script)
+        XCTAssertTrue(setup.script.contains("display-setup.json"))
+        XCTAssertFalse(setup.script.contains("FromBase64String"))
+        XCTAssertTrue(setup.script.contains("OOBEInProgress"))
+        let finish = try XCTUnwrap(files.first { $0.relativePath == "lumen/finish-setup.cmd" }).contents
+        XCTAssertTrue(finish.contains("Start-ScheduledTask"))
+        // FirstLogonCommands must return so Windows can finish OOBE; readiness
+        // executes asynchronously from the protected graphics task.
+        XCTAssertFalse(finish.contains("-File"))
+        let graphics = try XCTUnwrap(files.first { $0.relativePath == "lumen/install-graphics-service.cmd" }).contents
+        XCTAssertTrue(graphics.contains("New-ScheduledTaskTrigger -AtLogOn"))
+        XCTAssertTrue(graphics.contains(#"$env:TARGET+'\display-ready.ps1'"#))
+    }
+
+    func testMultipleFoldersMigrateAndPersistWithPermissions() throws {
+        var record = VirtualMachineRecord(name: "Folders", guest: .windows, sharedDirectoryPath: "/tmp/first", sharedFolderReadOnly: true)
+        XCTAssertEqual(record.sharedFolders, [SharedFolder(path: "/tmp/first", readOnly: true)])
+        record.sharedFolders.append(SharedFolder(path: "/tmp/second"))
+        let data = try JSONEncoder().encode(record)
+        let restored = try JSONDecoder().decode(VirtualMachineRecord.self, from: data)
+        XCTAssertEqual(restored.sharedFolders, record.sharedFolders)
+        XCTAssertEqual(restored.sharedDirectoryPath, "/tmp/first")
+        record.sharedFolders = []
+        XCTAssertNil(record.sharedDirectoryPath)
+        XCTAssertTrue(record.additionalSharedFolders.isEmpty)
+    }
+
+    func testSharedFolderNamesAreDistinctAndPortable() {
+        let names = SharedFolder.named([
+            SharedFolder(path: "/tmp/a/Desktop"), SharedFolder(path: "/tmp/b/desktop"),
+            SharedFolder(path: "/tmp/a/IPC$"), SharedFolder(path: "/tmp/a/what?*folder")
+        ]).map(\.name)
+        XCTAssertEqual(names, ["Desktop", "desktop (2)", "Shared_IPC$", "what__folder"])
+    }
+
+    func testManagedSharingUsesPrivateGuestEndpointAndUserStartup() throws {
+        let connection = WindowsFolderConnection(password: String(repeating: "a", count: 64), shares: ["Desktop", "Files (2)"])
+        let files = WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: nil, managedSharing: connection)
+        let script = try XCTUnwrap(files.first { $0.relativePath == "lumen/connect-folders.ps1" }?.contents)
+        XCTAssertTrue(script.contains("10.0.2.4"))
+        XCTAssertTrue(script.contains("/user:Lumen"))
+        XCTAssertFalse(script.contains("10.0.2.2"))
+        XCTAssertFalse(script.contains("Z:"))
+        XCTAssertTrue(files.contains { $0.relativePath == "lumen/install-sharing.cmd" })
+        let driver = try XCTUnwrap(files.first { $0.relativePath == "lumen/install-drivers.cmd" }?.contents)
+        XCTAssertTrue(driver.contains("install-sharing.cmd"))
+    }
+
+    func testWindowsMenuCommandsUseFixedGuestPathsAndSupportedKeys() {
+        for command in [WindowsGuestCommands.installDrivers, WindowsGuestCommands.displaySettings,
+                        WindowsGuestCommands.networkSettings, WindowsGuestCommands.deviceManager, WindowsGuestCommands.connectFolders] {
+            XCTAssertTrue(GuestKeyboard.supports(command))
+            XCTAssertLessThan(command.count, 260, "Windows Run has a limited command length")
+            XCTAssertFalse(command.contains("/Users/"))
+        }
+        XCTAssertTrue(WindowsGuestCommands.installDrivers.contains("-Verb RunAs"))
+        XCTAssertTrue(WindowsGuestCommands.installDrivers.contains("-FileSystemLabel LUMENSETUP"))
+        XCTAssertFalse(WindowsGuestCommands.installDrivers.contains("ExecutionPolicy"))
+    }
     private var temporary: URL!
     override func setUpWithError() throws {
         let root = ProcessInfo.processInfo.environment["LUMEN_TEST_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -56,6 +131,32 @@ final class DetectionAndPolicyTests: XCTestCase {
         XCTAssertNil(LinuxDistribution.match("aarch64-random.iso"))
     }
 
+    func testRecognizesAbyssLinuxBeforeVoid() throws {
+        for name in ["abyss-linux-20261019-aarch64.iso", "void-suckless-dev-aarch64.iso", "media ABYSS_LIVE"] {
+            let entry = LinuxDistribution.match(name)
+            XCTAssertEqual(entry?.id, "abyss", name)
+            XCTAssertEqual(entry?.family, .abyssLinux, name)
+        }
+        XCTAssertEqual(LinuxDistribution.match("void-live-aarch64-20250202-base.iso")?.id, "void")
+        XCTAssertEqual(LinuxDistribution.match("VOID_LIVE")?.id, "void")
+        XCTAssertTrue(GuestOS.abyssLinux.isLinux)
+        XCTAssertTrue(GuestOS.abyssLinux.usesAppleVirtualization)
+        XCTAssertNil(LinuxDistribution.entry(id: "abyss")?.downloadURL)
+    }
+
+    func testExistingVoidMachineStillDecodesAndAbyssRoundTrips() throws {
+        let legacy = Data(#"{"id":"0B232D1B-0000-4000-8000-000000000000","name":"Void Linux","guest":"voidLinux","distribution":"void","cpuCount":4,"memoryGiB":8,"diskGiB":32}"#.utf8)
+        var record = try JSONDecoder().decode(VirtualMachineRecord.self, from: legacy)
+        XCTAssertEqual(record.guest, .voidLinux)
+        XCTAssertEqual(record.operatingSystemName, "Void Linux")
+        record.guest = .abyssLinux
+        record.distribution = "abyss"
+        let decoded = try JSONDecoder().decode(VirtualMachineRecord.self, from: JSONEncoder().encode(record))
+        XCTAssertEqual(decoded.guest, .abyssLinux)
+        XCTAssertEqual(decoded.operatingSystemName, "Abyss Linux")
+        XCTAssertNoThrow(try decoded.validate())
+    }
+
     func testReadsISOLabelAndEFIBootLoader() throws {
         // Build a tiny ISO 9660 image: EFI/BOOT/BOOTAA64.EFI with a recognizable volume label.
         let source = temporary.appendingPathComponent("src")
@@ -83,6 +184,8 @@ final class DetectionAndPolicyTests: XCTestCase {
         XCTAssertEqual(policy.memoryReserveGiB, 12)
         XCTAssertEqual(policy.guestMemoryBudgetGiB(on: host), 36)
         XCTAssertEqual(policy.maxCPUsPerMachine(on: host), 10)
+        XCTAssertEqual(policy.recommended(for: .windows, on: host).cpus, 8)
+        XCTAssertLessThan(policy.recommended(for: .windows, on: host).cpus, host.cpuCount)
         XCTAssertTrue(policy.canStart(memoryGiB: 8, alreadyRunningGiB: 28, on: host))
         XCTAssertFalse(policy.canStart(memoryGiB: 8, alreadyRunningGiB: 30, on: host))
         let small = HostResources(memoryGiB: 8, cpuCount: 8)
@@ -101,10 +204,36 @@ final class DetectionAndPolicyTests: XCTestCase {
         XCTAssertFalse(xml.contains("<ProductKey>"))
         XCTAssertFalse(xml.contains("<DiskConfiguration>"))
         XCTAssertTrue(files.contains { $0.relativePath == "startup.nsh" && $0.contents.contains("bootaa64.efi") })
-        XCTAssertTrue(files.contains { $0.relativePath.hasSuffix("Connect Mac Shared Folder.cmd") && $0.contents.contains(#"\\10.0.2.2\Lumen Shared"#) })
+        XCTAssertTrue(files.contains { $0.relativePath.hasSuffix("Connect Mac Shared Folder.cmd") && $0.contents.contains("-EncodedCommand") })
         let plain = WindowsSetupMedia.autounattend(bypassChecks: false)
         XCTAssertFalse(plain.contains("LabConfig"))
         XCTAssertNoThrow(try XMLDocument(xmlString: plain))
+        XCTAssertTrue(plain.contains("<DynamicUpdate><Enable>false</Enable>"))
+    }
+
+    func testLocalAccountSetupIsOptionalAndPreservesLegacyRecords() throws {
+        var record = VirtualMachineRecord(name: "Windows", guest: .windows)
+        XCTAssertTrue(record.windowsLocalAccount)
+        XCTAssertFalse(record.windowsCompatibilityDisplay)
+        XCTAssertTrue(record.windowsAutomaticDisplaySetup)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "windowsLocalAccount")
+        let legacy = try JSONDecoder().decode(VirtualMachineRecord.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertFalse(legacy.windowsLocalAccount)
+        record.windowsLocalAccount = false
+        XCTAssertEqual(try JSONDecoder().decode(VirtualMachineRecord.self, from: JSONEncoder().encode(record)), record)
+        for local in [true, false] {
+            let xml = WindowsSetupMedia.autounattend(bypassChecks: false, preferLocalAccount: local)
+            let doc = try XMLDocument(xmlString: xml)
+            let nodes = try doc.nodes(forXPath: "//*[local-name()='settings'][@pass='oobeSystem']//*[local-name()='HideOnlineAccountScreens']")
+            XCTAssertEqual(nodes.first?.stringValue, local ? "true" : nil)
+            XCTAssertFalse(xml.contains("<UserAccounts>"))
+            XCTAssertFalse(xml.contains("<AutoLogon>"))
+            XCTAssertFalse(xml.contains("SkipMachineOOBE"))
+            let commands = try doc.nodes(forXPath: "//*[local-name()='FirstLogonCommands']//*[local-name()='CommandLine']")
+            XCTAssertEqual(commands.count, 1)
+            XCTAssertEqual(commands.first?.stringValue, #"cmd /d /c for %i in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %i:\lumen\finish-setup.cmd call %i:\lumen\finish-setup.cmd /setup"#)
+        }
     }
 
     func testDiskGrowsButNeverShrinks() throws {
@@ -116,5 +245,153 @@ final class DetectionAndPolicyTests: XCTestCase {
         XCTAssertEqual(usage.capacityBytes, 32 * 1_073_741_824)
         XCTAssertLessThan(usage.allocatedBytes, 1_048_576)
         XCTAssertThrowsError(try library.growDisk(for: record.id, toGiB: 16))
+        XCTAssertThrowsError(try library.growDisk(for: record.id, toGiB: Int.max))
+    }
+
+    func testWindowsDriverMediaPersistsWithoutChangingLegacyIdentity() throws {
+        let original = VirtualMachineRecord(name: "Windows", guest: .windows,
+            windowsDriversPath: "/shared/virtio-win.iso", portForwards: [PortForward(hostPort: 2222, guestPort: 22)])
+        let restored = try JSONDecoder().decode(VirtualMachineRecord.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(restored, original)
+        XCTAssertEqual(restored.macAddress, original.macAddress)
+        XCTAssertEqual(restored.displayWidth, 2560)
+        var invalid = original
+        invalid.windowsDriversPath = "/shared/driver.exe"
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
+    func testDriverSetupUsesARM64AndNeverPausesUnattendedInstallation() throws {
+        let files = WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: nil)
+        let xml = try XCTUnwrap(files.first { $0.relativePath == "autounattend.xml" }).contents
+        XCTAssertNoThrow(try XMLDocument(xmlString: xml))
+        XCTAssertFalse(xml.contains("BypassSecureBootCheck"))
+        XCTAssertTrue(xml.contains("drvload"))
+        XCTAssertTrue(xml.contains(#"viogpudo\w11\ARM64\viogpudo.inf"#))
+        XCTAssertTrue(xml.contains("install-drivers.cmd /setup"))
+        let script = try XCTUnwrap(files.first { $0.relativePath == "lumen/install-drivers.cmd" }).contents
+        XCTAssertTrue(script.contains("NetKVM viogpudo Balloon"))
+        XCTAssertTrue(script.contains("if /i \"%~1\"==\"/quiet\" exit /b %FAILED%"))
+        XCTAssertFalse(script.lowercased().contains("testsigning"))
+        XCTAssertFalse(script.lowercased().contains("amd64"))
+        let graphics = try XCTUnwrap(files.first { $0.relativePath == "lumen/install-graphics-service.cmd" }).contents
+        XCTAssertTrue(script.contains("call \"%~dp0install-graphics-service.cmd\""))
+        XCTAssertTrue(graphics.contains("Get-AuthenticodeSignature"))
+        XCTAssertTrue(graphics.contains("viogpuap.exe"))
+        XCTAssertTrue(graphics.contains("sc config vgpusrv"))
+        XCTAssertTrue(graphics.contains("WaitForStatus('Running'"))
+        let display = try XCTUnwrap(files.first { $0.relativePath == "lumen/configure-display.cmd" }).contents
+        XCTAssertTrue(graphics.contains("New-ScheduledTaskTrigger -AtStartup"))
+        XCTAssertTrue(graphics.contains("-User SYSTEM -RunLevel Highest"))
+        XCTAssertTrue(display.contains("Get-PnpDevice -PresentOnly"))
+        XCTAssertTrue(display.contains("$env:LUMEN_DISPLAY_BOOT -ne '1'"))
+        XCTAssertTrue(display.contains("PCI\\VEN_1AF4&DEV_1050*"))
+        XCTAssertTrue(display.contains("Remove-ItemProperty"))
+        XCTAssertTrue(display.contains("shutdown.exe /r /t 0"))
+        XCTAssertFalse(display.contains("shutdown.exe /r /f"))
+        XCTAssertFalse(graphics.contains("Services\\BasicDisplay"))
+        // The desktop entry must retain the adjacent resize-service helper and ask for UAC.
+        XCTAssertTrue(xml.contains("xcopy"))
+        XCTAssertTrue(xml.contains(#"%ProgramData%\Lumen\Tools\"#))
+        let desktop = try XCTUnwrap(files.first { $0.relativePath == "lumen/Install Lumen Drivers.cmd" }).contents
+        XCTAssertTrue(desktop.contains("-Verb RunAs"))
+        XCTAssertTrue(desktop.contains(#"Lumen\Tools\finish-setup.cmd"#))
+    }
+
+    func testOlderWindowsMachinesKeepAVisibleRecoveryFramebuffer() throws {
+        var record = VirtualMachineRecord(name: "Windows", guest: .windows)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "windowsCompatibilityDisplay")
+        object.removeValue(forKey: "windowsAutomaticDisplaySetup")
+        let legacy = try JSONDecoder().decode(VirtualMachineRecord.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertTrue(legacy.windowsCompatibilityDisplay)
+        XCTAssertFalse(legacy.windowsAutomaticDisplaySetup)
+        record.windowsCompatibilityDisplay = false
+        let modern = try JSONDecoder().decode(VirtualMachineRecord.self, from: JSONEncoder().encode(record))
+        XCTAssertFalse(modern.windowsCompatibilityDisplay)
+    }
+
+    func testUnsafeShareNamesAreNeverInsertedIntoBatchCommands() throws {
+        for name in ["name\r\ncalc", "quote\"", "path\\child", "path/child", "a|b"] {
+            XCTAssertFalse(WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: name)
+                .contains { $0.relativePath.hasSuffix("Connect Mac Shared Folder.cmd") })
+        }
+        XCTAssertTrue(WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: "My Shared Folder")
+            .contains { $0.relativePath.hasSuffix("Connect Mac Shared Folder.cmd") })
+        let name = "O'Brien & %PATH% !shared! é"
+        let script = try XCTUnwrap(WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: name)
+            .first { $0.relativePath.hasSuffix("Connect Mac Shared Folder.cmd") }).contents
+        XCTAssertFalse(script.contains(name))
+        XCTAssertFalse(script.contains("net use Z:"))
+        let payload = try XCTUnwrap(script.components(separatedBy: "-EncodedCommand ").last?.components(separatedBy: "\r\n").first)
+        let data = try XCTUnwrap(Data(base64Encoded: payload))
+        let command = try XCTUnwrap(String(data: data, encoding: .utf16LittleEndian))
+        XCTAssertTrue(command.contains("$p='\\\\10.0.2.2\\O''Brien & %PATH% !shared! é'"))
+        XCTAssertTrue(command.contains("-FilePath explorer.exe"))
+    }
+
+    func testLocalFileSelectionRejectsDirectoriesAndNonlocalInstallers() throws {
+        let image = temporary.appendingPathComponent("My Windows ARM64.ISO")
+        try Data([0]).write(to: image)
+        XCTAssertNoThrow(try LocalFileSelection.validateInstaller(image))
+        XCTAssertThrowsError(try LocalFileSelection.validateFolder(image))
+        let folder = temporary.appendingPathComponent("folder.iso", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        XCTAssertThrowsError(try LocalFileSelection.validateInstaller(folder))
+        XCTAssertNoThrow(try LocalFileSelection.validateFolder(folder))
+        XCTAssertThrowsError(try LocalFileSelection.validateInstaller(URL(string: "https://example.com/windows-arm64.iso")!))
+        XCTAssertThrowsError(try LocalFileSelection.validateInstaller(temporary.appendingPathComponent("missing.iso")))
+        XCTAssertThrowsError(try LocalFileSelection.validateInstaller(temporary.appendingPathComponent("setup.exe")))
+    }
+
+    func testMacSharingUsesPublishedNameAndExactEnabledFolder() throws {
+        let data = Data(#"{"First":{"path":"/tmp/LumenFolder","smb_name":"Published Name","smb_shared":1,"smb_read_only":1},"Disabled":{"path":"/tmp/Disabled","smb_name":"Disabled","smb_shared":0}}"#.utf8)
+        let share = try XCTUnwrap(MacSMBShare.configuredShare(for: URL(fileURLWithPath: "/tmp/LumenFolder"), in: data))
+        XCTAssertEqual(share.name, "Published Name")
+        XCTAssertTrue(share.readOnly)
+        XCTAssertNil(try MacSMBShare.configuredShare(for: URL(fileURLWithPath: "/tmp/Disabled"), in: data))
+        XCTAssertNil(try MacSMBShare.configuredShare(for: URL(fileURLWithPath: "/tmp/LumenFolder/child"), in: data))
+        XCTAssertThrowsError(try MacSMBShare.configuredShare(for: temporary, in: Data("not json".utf8)))
+    }
+
+    func testPortForwardingValidatesBoundsAndDuplicateEndpoints() throws {
+        let rule = PortForward(hostPort: 2222, guestPort: 22)
+        XCTAssertEqual(rule.qemuOption, "hostfwd=tcp:127.0.0.1:2222-:22")
+        var record = VirtualMachineRecord(name: "Windows", guest: .windows, portForwards: [rule])
+        XCTAssertNoThrow(try record.validate())
+        record.portForwards.append(PortForward(hostPort: 2222, guestPort: 80))
+        XCTAssertThrowsError(try record.validate())
+        record.portForwards = [rule, PortForward(transport: .udp, hostPort: 2222, guestPort: 53)]
+        XCTAssertNoThrow(try record.validate())
+        record.portForwards = [PortForward(hostPort: 65536, guestPort: 80)]
+        XCTAssertThrowsError(try record.validate())
+        record.portForwards = [rule]
+        record.guest = .ubuntu
+        XCTAssertThrowsError(try record.validate())
+    }
+
+    func testPasswordInjectionRejectsUnmappableCharactersBeforeTyping() {
+        XCTAssertTrue(GuestKeyboard.supports("Test 123!@#$%^&*()_+-=[]{};:'\",.<>/?`~\\|"))
+        for password in ["", "pässword", "🔐", "hello\nworld", "tabs\t"] {
+            XCTAssertFalse(GuestKeyboard.supports(password))
+        }
+    }
+
+    func testISODetectionFindsPrimaryDescriptorAfterBootRecord() throws {
+        var bytes = Data(repeating: 0, count: 20 * 2048)
+        let signature = Data("CD001".utf8)
+        bytes.replaceSubrange(16 * 2048 + 1..<16 * 2048 + 6, with: signature)
+        bytes[16 * 2048] = 0 // El Torito boot descriptor first.
+        let base = 17 * 2048
+        bytes[base] = 1
+        bytes.replaceSubrange(base + 1..<base + 6, with: signature)
+        bytes[base + 128] = 0
+        bytes[base + 129] = 8
+        let label = Data("CCCOMA_X64FRE_EN-US_DV9".utf8)
+        bytes.replaceSubrange(base + 40..<base + 40 + label.count, with: label)
+        let url = temporary.appendingPathComponent("renamed.iso")
+        try bytes.write(to: url)
+        let detected = InstallerDetector.detect(url: url)
+        XCTAssertEqual(detected.guest, .windows)
+        XCTAssertEqual(detected.architecture, .x86_64)
     }
 }

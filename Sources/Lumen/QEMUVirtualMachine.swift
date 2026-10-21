@@ -3,6 +3,7 @@ import Combine
 import Darwin
 import Foundation
 import LumenCore
+import UniformTypeIdentifiers
 
 /// Optional Windows ARM64 backend. QEMU owns the guest display in a separate Cocoa window.
 /// This is an experimental hardware profile, not a claim of Windows certification.
@@ -16,6 +17,12 @@ final class QEMUVirtualMachine: ObservableObject {
     var logURL: URL { location.directory.appendingPathComponent("qemu.log") }
     var isProcessRunning: Bool { process?.isRunning == true }
 
+    private var displayReceiptDirectory: URL?
+    private var displaySetup: WindowsDisplaySetup?
+    private var displaySetupTask: Task<Void, Never>?
+    private var needsAutomaticDisplaySetup: Bool { record.windowsAutomaticDisplaySetup && !record.windowsCompatibilityDisplay }
+    private var usesCompatibilityDisplay: Bool { record.windowsCompatibilityDisplay || needsAutomaticDisplaySetup }
+    private var managedSharing: ManagedWindowsSharing?
     private var process: Process?
     private var inputPipe: Pipe?
     private var outputPipe: Pipe?
@@ -29,6 +36,34 @@ final class QEMUVirtualMachine: ObservableObject {
     private var launchID: UUID?
     private var startupTimeout: Task<Void, Never>?
     private var stopTimeout: Task<Void, Never>?
+    private var tpmProcess: Process?
+    private var tpmRuntimeDirectory: URL?
+    private var processBundleRoot: URL?
+    private let controlToken = UUID().uuidString
+    private var menuControlObserver: NSObjectProtocol?
+    private var menuStatusObservation: AnyCancellable?
+    private var menuBridgeReady = false
+    private var isSendingGuestCommand = false
+    var onLibraryAction: ((String) -> Void)?
+    var onFilesDrop: (([URL]) -> Void)?
+
+    static var tpmExecutableURL: URL? {
+        ["/opt/homebrew/bin/swtpm", "/usr/local/bin/swtpm"].first {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }.map { URL(fileURLWithPath: $0) }
+    }
+
+    static var defaultDriversURL: URL? {
+        if let path = UserDefaults.standard.string(forKey: "windowsDriversPath"),
+           FileManager.default.isReadableFile(atPath: path) { return URL(fileURLWithPath: path) }
+        return Bundle.main.url(forResource: "WindowsDrivers", withExtension: "iso")
+    }
+
+    var driversURL: URL? {
+        if let path = record.windowsDriversPath { return URL(fileURLWithPath: path) }
+        let legacy = location.directory.appendingPathComponent("Drivers.iso")
+        return FileManager.default.isReadableFile(atPath: legacy.path) ? legacy : Self.defaultDriversURL
+    }
 
     init(record: VirtualMachineRecord, location: VMLocation) {
         self.record = record
@@ -58,14 +93,17 @@ final class QEMUVirtualMachine: ObservableObject {
         return "QEMU is available. Windows ARM64 is experimental and opens in a separate window."
     }
 
-    func start(bootInstaller: Bool) throws {
-        guard process == nil else { throw QEMUError("This virtual machine is already active.") }
+    func start(bootInstaller: Bool) async throws {
+        guard process == nil, !state.isActive else { throw QEMUError("This virtual machine is already active.") }
         try record.validate()
         guard record.guest == .windows else { throw QEMUError("This QEMU profile is for Windows ARM64.") }
         guard record.macAddress.range(of: "^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", options: .regularExpression) != nil else {
             throw QEMUError("The virtual network adapter has an invalid MAC address.")
         }
         guard let executable = Self.executableURL else { throw QEMUError(Self.availabilityDescription) }
+        if !record.windowsCompatibilityDisplay, driversURL == nil {
+            throw QEMUError("Choose an ARM64 VirtIO driver ISO or enable Compatibility display. Windows needs its display driver to keep refreshing after firmware boot.")
+        }
         #if !arch(arm64)
         throw QEMUError("The Windows backend requires an Apple silicon Mac.")
         #else
@@ -78,8 +116,40 @@ final class QEMUVirtualMachine: ObservableObject {
             }
         }
         let firmware = try prepareFirmware(executable: executable)
-        let arguments = try makeArguments(firmware: firmware, bootInstaller: bootInstaller)
+        var launchSucceeded = false
+        defer {
+            if !launchSucceeded { cleanup(); state = .failed }
+        }
         errorMessage = nil
+        state = .starting
+        let arguments: [String]
+        do {
+            if record.windowsTPM { try await startTPM() }
+            if !record.sharedFolders.isEmpty || needsAutomaticDisplaySetup {
+                guard record.networkEnabled || record.sharedFolders.isEmpty else { throw QEMUError("Enable networking to connect the selected shared folders.") }
+                var setupShare: (name: String, directory: URL)?
+                if needsAutomaticDisplaySetup {
+                    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("lumen-display-" + UUID().uuidString)
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                    displayReceiptDirectory = directory
+                    setupShare = ("LumenSetup_" + UUID().uuidString.replacingOccurrences(of: "-", with: "") + "$", directory)
+                }
+                let sharing = ManagedWindowsSharing()
+                managedSharing = sharing
+                try await sharing.start(folders: record.sharedFolders, location: location, setupShare: setupShare)
+                if let setupShare, let connection = sharing.connection {
+                    displaySetup = WindowsDisplaySetup(password: connection.password, share: setupShare.name, ticket: UUID().uuidString)
+                }
+            }
+            let setupMedia = try await prepareSetupMedia()
+            arguments = try makeArguments(firmware: firmware, setupMedia: setupMedia, bootInstaller: bootInstaller)
+                + (Self.firmwareDirectory(for: executable).map { ["-L", $0.path] } ?? [])
+        } catch {
+            cleanup()
+            state = .failed
+            errorMessage = error.localizedDescription
+            throw error
+        }
         expectedExit = false
         monitorReady = false
         incoming.removeAll()
@@ -100,7 +170,9 @@ final class QEMUVirtualMachine: ObservableObject {
         launchID = currentLaunch
         let input = Pipe()
         let output = Pipe()
-        child.executableURL = executable
+        let host = try VMProcessBundle.prepare(executable: executable, name: record.name, id: record.id)
+        processBundleRoot = host.root
+        child.executableURL = host.executable
         child.arguments = arguments
         child.currentDirectoryURL = location.directory
         child.standardInput = input
@@ -108,16 +180,22 @@ final class QEMUVirtualMachine: ObservableObject {
         child.standardError = logHandle
 
         var env = ProcessInfo.processInfo.environment
+        env["LUMEN_VM_CONTROL_TOKEN"] = controlToken
+        env["LUMEN_VM_MENU_REPORT"] = location.directory.appendingPathComponent("guest-menu.json").path
         if let helper = helperDylibURL() {
             env["DYLD_INSERT_LIBRARIES"] = helper.path
             env["LUMEN_VM_NAME"] = record.name
             env["LUMEN_VM_WIDTH"] = String(record.displayWidth)
             env["LUMEN_VM_HEIGHT"] = String(record.displayHeight)
+            env["LUMEN_VM_AUTO_RESIZE"] = record.autoResizeDisplay ? "1" : "0"
+            env["LUMEN_VM_DISK_SYNC"] = record.diskSyncMode.rawValue
+            env["LUMEN_VM_DISK_PATH"] = location.disk.path
             if let iconURL = try? prepareGuestIcon() {
                 env["LUMEN_VM_ICON"] = iconURL.path
             }
         }
         child.environment = env
+        installMenuBridge()
 
         // A dead child must report an error, rather than deliver SIGPIPE to the application.
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
@@ -136,6 +214,8 @@ final class QEMUVirtualMachine: ObservableObject {
         state = .starting
         do {
             try child.run()
+            launchSucceeded = true
+            watchDisplaySetup()
         } catch {
             cleanup()
             state = .failed
@@ -149,6 +229,323 @@ final class QEMUVirtualMachine: ObservableObject {
             self.process?.terminate()
         }
         #endif
+    }
+
+    private func watchDisplaySetup() {
+        guard let directory = displayReceiptDirectory, let setup = displaySetup else { return }
+        displaySetupTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, !Task.isCancelled, self.isProcessRunning else { return }
+                guard self.state == .running,
+                      let handle = try? FileHandle(forReadingFrom: directory.appendingPathComponent("display-ready")) else { continue }
+                let data = try? handle.read(upToCount: 128)
+                try? handle.close()
+                guard let data, setup.acceptsReceipt(data) else { continue }
+                self.onLibraryAction?("automatic-retina")
+                return
+            }
+        }
+    }
+
+    func showDisplay() {
+        guard let process, process.isRunning else { return }
+        NSRunningApplication(processIdentifier: process.processIdentifier)?.activate(options: [.activateAllWindows])
+    }
+
+    private func installMenuBridge() {
+        let center = DistributedNotificationCenter.default()
+        menuControlObserver = center.addObserver(forName: Notification.Name("app.lumen.control.\(controlToken)"),
+                                                object: nil, queue: .main) { [weak self] notification in
+            guard let action = notification.userInfo?["action"] as? String else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.isProcessRunning else { return }
+                if action == "drop-files" {
+                    guard self.state == .running,
+                          let values = notification.userInfo?["urls"] as? [String],
+                          !values.isEmpty, values.count <= 128 else { return }
+                    let urls = values.compactMap { URL(string: $0) }
+                    guard urls.count == values.count, urls.allSatisfy(\.isFileURL) else { return }
+                    self.onFilesDrop?(urls)
+                    return
+                }
+                do { try await self.handleMenuAction(action) }
+                catch {
+                    self.errorMessage = error.localizedDescription
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
+        }
+        menuStatusObservation = $state.sink { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.publishMenuStatus() }
+        }
+    }
+
+    private func mediaBlocks() async throws -> [[String: Any]] {
+        try await request("query-block", arguments: [:])["items"] as? [[String: Any]] ?? []
+    }
+
+    private func block(for role: String, in blocks: [[String: Any]]) -> [String: Any]? {
+        blocks.first { item in
+            let name = item["qdev"] as? String ?? ""
+            return name == "lumen-\(role)" || name.hasSuffix("/lumen-\(role)")
+        }
+    }
+
+    private func publishMenuStatus() async {
+        guard isProcessRunning else { return }
+        var media: [String: Bool] = [:]
+        if monitorReady, let blocks = try? await mediaBlocks() {
+            for role in ["installer", "drivers", "setup"] {
+                media["eject-\(role)"] = block(for: role, in: blocks)?["inserted"] != nil
+            }
+        }
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name("app.lumen.status.\(controlToken)"), object: nil,
+            userInfo: ["state": state.rawValue, "typing": isSendingGuestCommand, "media": media,
+                       "compatibilityDisplay": usesCompatibilityDisplay,
+                       "canReceiveFiles": record.sharedFolders.contains { !$0.readOnly },
+                       "sharedFolders": managedSharing != nil && !record.sharedFolders.isEmpty], deliverImmediately: true)
+    }
+
+    /// All removable drives have explicit qdev identities. Modern QEMU's legacy device field is blank.
+    private func changeMedia(role: String, url: URL?) async throws {
+        guard state == .running || state == .paused else { throw QEMUError("Start the machine before changing its discs.") }
+        let blocks = try await mediaBlocks()
+        guard let item = block(for: role, in: blocks), let id = item["qdev"] as? String else {
+            throw QEMUError("The \(role) drive is unavailable. Restart this VM with the updated Lumen app.")
+        }
+        if let url {
+            guard FileManager.default.isReadableFile(atPath: url.path) else { throw QEMUError("The selected disc cannot be read.") }
+            if let inserted = item["inserted"] as? [String: Any], inserted["file"] as? String == url.path,
+               item["tray_open"] as? Bool != true { return }
+            _ = try await request("blockdev-change-medium", arguments: [
+                "id": id, "filename": url.path, "format": "raw", "read-only-mode": "read-only"
+            ])
+        } else {
+            _ = try await request("eject", arguments: ["id": id])
+        }
+        await publishMenuStatus()
+    }
+
+    private func confirm(_ title: String, message: String, action: String) -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: action)
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    func installWindowsDrivers() async throws {
+        guard state == .running, !isSendingGuestCommand else { throw QEMUError("Windows must be running and ready for input.") }
+        guard confirm("Install / repair Windows guest tools?",
+                      message: "Log in to the Windows desktop first. Lumen will attach its discs and type a fixed command into Windows Run using a US keyboard layout. Approve the administrator prompt in Windows. The installer logs results in %TEMP%\\Lumen-drivers.log.",
+                      action: "Install Tools") else { return }
+        guard let drivers = driversURL else { throw QEMUError("Choose an ARM64 driver ISO in this VM’s settings first.") }
+        try await changeMedia(role: "drivers", url: drivers)
+        try await changeMedia(role: "setup", url: location.windowsSetupMedia)
+        try await openWindowsCommand(WindowsGuestCommands.installDrivers)
+    }
+
+    private func openWindowsCommand(_ text: String) async throws {
+        guard state == .running, !isSendingGuestCommand, GuestKeyboard.supports(text) else {
+            throw QEMUError("Windows must be running and ready for a US keyboard command.")
+        }
+        isSendingGuestCommand = true
+        await publishMenuStatus()
+        defer { isSendingGuestCommand = false; Task { await publishMenuStatus() } }
+        showDisplay()
+        try await Task.sleep(nanoseconds: 350_000_000)
+        _ = try await request("send-key", arguments: ["keys": [
+            ["type": "qcode", "data": "meta_l"], ["type": "qcode", "data": "r"]
+        ], "hold-time": 100])
+        // A cold Windows shell can take over a second to create Run; sending earlier
+        // loses the first characters and launches a truncated command.
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        _ = try await request("send-key", arguments: ["keys": [
+            ["type": "qcode", "data": "ctrl"], ["type": "qcode", "data": "a"]
+        ], "hold-time": 100])
+        try await Task.sleep(nanoseconds: 150_000_000)
+        for char in text {
+            try Task.checkCancellation()
+            guard state == .running, let process,
+                  NSRunningApplication(processIdentifier: process.processIdentifier)?.isActive == true else {
+                throw QEMUError("Command typing stopped because Windows lost focus. Close Windows Run and try again from the Windows desktop.")
+            }
+            // USB polling under guest load can miss very short presses. Use the
+            // same deliberate cadence for fixed commands as for guest passwords.
+            try await sendCharacter(char, holdTime: 80)
+            try await Task.sleep(nanoseconds: 80_000_000)
+        }
+        guard state == .running, let process,
+              NSRunningApplication(processIdentifier: process.processIdentifier)?.isActive == true else {
+            throw QEMUError("Windows lost focus before the command was submitted. Close Run and try again.")
+        }
+        try await sendKey("ret")
+    }
+
+    func connectSharedFolders() async throws {
+        guard managedSharing != nil, !record.sharedFolders.isEmpty else { throw QEMUError("Select folders in this VM’s settings, then restart the VM to share them.") }
+        try await changeMedia(role: "setup", url: location.windowsSetupMedia)
+        try await openWindowsCommand(WindowsGuestCommands.connectFolders)
+    }
+
+    private func handleMenuAction(_ action: String) async throws {
+        switch action {
+        case "ready": menuBridgeReady = true; await publishMenuStatus()
+        case "refresh": await publishMenuStatus()
+        case "pause": try pause()
+        case "resume": try resume()
+        case "shutdown": try requestStop()
+        case "force-stop":
+            if confirm("Force stop \(record.name)?", message: "Unsaved work in Windows will be lost. Use Shut Down when possible.", action: "Force Stop") { try forceStop() }
+        case "reset":
+            if confirm("Restart \(record.name) immediately?", message: "This resets the virtual hardware. Unsaved work in Windows will be lost.", action: "Restart") {
+                _ = try await request("system_reset", arguments: [:])
+            }
+        case "secure-attention":
+            guard state == .running else { return }
+            _ = try await request("send-key", arguments: ["keys": ["ctrl", "alt", "delete"].map { ["type": "qcode", "data": $0] }, "hold-time": 100])
+        case "install-drivers": try await installWindowsDrivers()
+        case "guest-folders": try await connectSharedFolders()
+        case "guest-display": try await openWindowsCommand(WindowsGuestCommands.displaySettings)
+        case "guest-network": try await openWindowsCommand(WindowsGuestCommands.networkSettings)
+        case "guest-devices": try await openWindowsCommand(WindowsGuestCommands.deviceManager)
+        case "guest-windows-key": if state == .running { try await sendKey("meta_l") }
+        case "guest-escape": if state == .running { try await sendKey("esc") }
+        case "mount-drivers":
+            guard let url = driversURL else { throw QEMUError("Choose a Windows driver disc in Settings first.") }
+            try await changeMedia(role: "drivers", url: url)
+        case "mount-setup": try await changeMedia(role: "setup", url: location.windowsSetupMedia)
+        case "mount-installer":
+            guard let path = record.installerPath else { throw QEMUError("No installer is configured. Use Choose ISO to insert one for this session.") }
+            try await changeMedia(role: "installer", url: URL(fileURLWithPath: path))
+        case "change-installer":
+            NSApp.activate(ignoringOtherApps: true)
+            let panel = NSOpenPanel()
+            panel.title = "Insert an ARM64 installer ISO for this session"
+            panel.allowedContentTypes = [.init(filenameExtension: "iso") ?? .data]
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            if panel.runModal() == .OK, let url = panel.url {
+                guard InstallerDetector.detect(url: url).architecture != .x86_64 else { throw QEMUError("Choose ARM64 installation media.") }
+                try await changeMedia(role: "installer", url: url)
+            }
+        case "eject-installer", "eject-drivers", "eject-setup":
+            try await changeMedia(role: String(action.dropFirst(6)), url: nil)
+        case "screenshot":
+            NSApp.activate(ignoringOtherApps: true)
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.png]
+            panel.nameFieldStringValue = "Windows Screenshot.png"
+            if panel.runModal() == .OK, let url = panel.url { try await screenshot(to: url) }
+        case "reveal": NSWorkspace.shared.activateFileViewerSelecting([location.directory])
+        case "log": NSWorkspace.shared.open(logURL)
+        case "about":
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "\(record.name) — Lumen VM"
+            alert.informativeText = "Windows ARM64 • \(record.cpuCount) CPUs • \(record.memoryGiB) GiB RAM\nPowered by the QEMU open-source engine and Apple Hypervisor. Driver installation results remain inside Windows."
+            alert.runModal()
+        case "driver-guide", "compatibility":
+            let name = action == "driver-guide" ? "feature-audit" : "compatibility"
+            if let url = Bundle.main.url(forResource: name, withExtension: "md", subdirectory: "Documentation") { NSWorkspace.shared.open(url) }
+        case "engine-docs": NSWorkspace.shared.open(URL(string: "https://www.qemu.org/docs/master/")!)
+        case "library", "settings", "start-all", "stop-all", "enable-retina": onLibraryAction?(action)
+        default: break // Never execute arbitrary commands received through the menu bridge.
+        }
+    }
+
+    /// Disposable diagnostic guest only: verifies bridge, branding and both read-only tool drives.
+    func testMenuIntegration() async throws -> [String: Any] {
+        let deadline = Date().addingTimeInterval(8)
+        while !menuBridgeReady {
+            guard Date() < deadline else { throw QEMUError("The guest menu bridge did not become ready.") }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        func waitForMenuState(_ expected: VMRuntimeState) async throws -> [String: Any] {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline {
+                if let data = try? Data(contentsOf: location.directory.appendingPathComponent("guest-menu.json")),
+                   let report = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let status = report["status"] as? [String: Any], status["state"] as? String == expected.rawValue {
+                    return report
+                }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            throw QEMUError("The menu did not reflect \(expected.title.lowercased()) state.")
+        }
+        func commands(in items: [[String: Any]]) -> [String: Bool] {
+            var result: [String: Bool] = [:]
+            for item in items {
+                if let action = item["command"] as? String { result[action] = item["enabled"] as? Bool ?? false }
+                if let children = item["items"] as? [[String: Any]] { result.merge(commands(in: children)) { first, _ in first } }
+            }
+            return result
+        }
+        let runningMenu = try await waitForMenuState(.running)
+        let menus = runningMenu["menus"] as? [[String: Any]] ?? []
+        let titles = menus.compactMap { $0["title"] as? String }
+        guard runningMenu["bundleName"] as? String == "Lumen VM",
+              runningMenu["processName"] as? String == "Lumen VM",
+              titles == ["Lumen VM", "Virtual Machine", "View", "Devices", "Window", "Help"],
+              commands(in: menus)["install-drivers"] == true else {
+            throw QEMUError("The branded menu inventory or driver action is incorrect.")
+        }
+        try pause()
+        let pausedMenu = try await waitForMenuState(.paused)
+        let pausedCommands = commands(in: pausedMenu["menus"] as? [[String: Any]] ?? [])
+        guard pausedCommands["pause"] == false, pausedCommands["resume"] == true,
+              pausedCommands["install-drivers"] == false else { throw QEMUError("Paused menu validation is incorrect.") }
+        try resume()
+        _ = try await waitForMenuState(.running)
+        for (role, url) in [("drivers", driversURL), ("setup", Optional(location.windowsSetupMedia))] {
+            guard let url else { throw QEMUError("The test driver disc is missing.") }
+            try await changeMedia(role: role, url: nil)
+            let empty = block(for: role, in: try await mediaBlocks())
+            guard empty?["inserted"] == nil else { throw QEMUError("The \(role) disc did not eject.") }
+            try await changeMedia(role: role, url: url)
+            guard block(for: role, in: try await mediaBlocks())?["inserted"] != nil else { throw QEMUError("The \(role) disc did not reinsert.") }
+        }
+        await publishMenuStatus()
+        try await Task.sleep(nanoseconds: 250_000_000)
+        var result = try await diagnosticStatus()
+        result["brandingAndMenuInventory"] = "passed"
+        result["pausedMenuValidation"] = "passed"
+        result["toolDiscEjectAndReinsert"] = "passed"
+        return result
+    }
+
+    private func startTPM() async throws {
+        guard let executable = Self.tpmExecutableURL else {
+            throw QEMUError("TPM 2.0 is enabled. Install swtpm with Homebrew, or turn off TPM in this VM’s settings. Existing TPM state is always preserved.")
+        }
+        try FileManager.default.createDirectory(at: location.tpmState, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        // Darwin socket paths are limited to 104 bytes. Keep runtime sockets separate from persistent keys.
+        let runtime = URL(fileURLWithPath: "/tmp/lumen-tpm-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        tpmRuntimeDirectory = runtime
+        let socket = runtime.appendingPathComponent("ctrl")
+        let child = Process()
+        child.executableURL = executable
+        child.currentDirectoryURL = location.tpmState
+        child.arguments = ["socket", "--tpm2", "--tpmstate", "dir=.,mode=0600,lock",
+                           "--ctrl", "type=unixio,path=\(socket.path),mode=0600,terminate",
+                           "--flags", "not-need-init"]
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        tpmProcess = child
+        try child.run()
+        let deadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: socket.path) {
+            guard child.isRunning else { throw QEMUError("The TPM emulator could not initialize. Its stored keys were retained.") }
+            guard Date() < deadline else { throw QEMUError("The TPM emulator did not create its control socket.") }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
     }
 
     func pause() throws {
@@ -185,6 +582,20 @@ final class QEMUVirtualMachine: ObservableObject {
     }
 
     func sendBootKey() async throws { try await sendKey("spc") }
+
+    func diagnosticStatus() async throws -> [String: Any] {
+        let status = try await request("query-status", arguments: [:])
+        let tpm = try await request("query-tpm", arguments: [:])
+        var result: [String: Any] = ["status": status, "tpm": tpm["items"] ?? [],
+                "driversPath": driversURL?.path ?? "none",
+                "compatibilityDisplay": usesCompatibilityDisplay,
+                "configuredDisplayWidth": record.displayWidth,
+                "configuredDisplayHeight": record.displayHeight]
+        result["menuBridgeReady"] = menuBridgeReady
+        if let data = try? Data(contentsOf: location.directory.appendingPathComponent("guest-menu.json")),
+           let menu = try? JSONSerialization.jsonObject(with: data) { result["guestMenus"] = menu }
+        return result
+    }
 
     /// Uses a QEMU qcode (for example spc, ret, tab or esc); QEMU validates the key name.
     func sendKey(_ qcode: String) async throws {
@@ -258,54 +669,76 @@ final class QEMUVirtualMachine: ObservableObject {
         return (code, variables)
     }
 
-    private func prepareSetupMedia() throws -> URL? {
-        guard record.windowsBypassChecks else { return nil }
+    private func prepareSetupMedia() async throws -> URL {
+        let sharingConnection = managedSharing?.connection
+        let displaySetup = self.displaySetup
+        let clipboardResources = Bundle.main.resourceURL?.appendingPathComponent("WindowsClipboard")
+        return try await Task.detached { [record, location, sharingConnection, clipboardResources, displaySetup] in
         let isoURL = location.windowsSetupMedia
         let staging = location.directory.appendingPathComponent(".setup-staging-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: staging) }
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        let shareName = record.sharedDirectoryPath.map { URL(fileURLWithPath: $0).lastPathComponent }
-        let files = WindowsSetupMedia.files(bypassChecks: record.windowsBypassChecks, sharedFolderName: shareName)
+        let files = WindowsSetupMedia.files(bypassChecks: record.windowsBypassChecks, sharedFolderName: nil, managedSharing: sharingConnection, preferLocalAccount: record.windowsLocalAccount, displaySetup: displaySetup)
         for file in files {
             let dest = staging.appendingPathComponent(file.relativePath)
             try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             try file.contents.write(to: dest, atomically: true, encoding: .utf8)
         }
-        if FileManager.default.fileExists(atPath: isoURL.path) {
-            try? FileManager.default.removeItem(at: isoURL)
+        if let clipboardResources {
+            let destination = staging.appendingPathComponent("lumen/agent")
+            try FileManager.default.copyItem(at: clipboardResources, to: destination)
         }
+        let temporaryISO = location.directory.appendingPathComponent(".setup-\(UUID().uuidString).iso")
+        defer { try? FileManager.default.removeItem(at: temporaryISO) }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        proc.arguments = ["makehybrid", "-iso", "-default-volume-name", "LUMENSETUP", "-o", isoURL.path, staging.path]
+        proc.arguments = ["makehybrid", "-iso", "-joliet", "-default-volume-name", "LUMENSETUP", "-o", temporaryISO.path, staging.path]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         try proc.run()
         proc.waitUntilExit()
-        return FileManager.default.isReadableFile(atPath: isoURL.path) ? isoURL : nil
+        guard proc.terminationStatus == 0 else { throw QEMUError("Could not build the Windows helper disc. See available space and folder permissions.") }
+        if FileManager.default.fileExists(atPath: isoURL.path) {
+            _ = try FileManager.default.replaceItemAt(isoURL, withItemAt: temporaryISO)
+        } else {
+            try FileManager.default.moveItem(at: temporaryISO, to: isoURL)
+        }
+        return isoURL
+        }.value
     }
 
-    private func makeArguments(firmware: (code: URL, variables: URL), bootInstaller: Bool) throws -> [String] {
+    private func makeArguments(firmware: (code: URL, variables: URL), setupMedia: URL, bootInstaller: Bool) throws -> [String] {
         let memMB = record.memoryGiB * 1024
         var arguments = [
             "-name", record.name.replacingOccurrences(of: ",", with: ",,"),
             "-machine", "virt,highmem=on,gic-version=3,pflash0=uefi-code,pflash1=uefi-vars",
             "-accel", "hvf", "-cpu", "host", "-smp", String(record.cpuCount),
             "-m", String(memMB),
-            "-nodefaults", "-display", "cocoa,zoom-to-fit=on",
-            "-device", "virtio-gpu-pci,edid=on,xres=\(record.displayWidth),yres=\(record.displayHeight)",
+            "-nodefaults", "-display", "cocoa,zoom-to-fit=on,left-command-key=\(record.captureSystemKeys ? "on" : "off")",
+            "-device", usesCompatibilityDisplay ? "ramfb" : "virtio-gpu-pci,edid=on,xres=\(record.displayWidth),yres=\(record.displayHeight)",
             "-fw_cfg", "name=opt/org.tianocore/X-GOP-Resolution,string=\(record.displayWidth)x\(record.displayHeight)",
             "-device", "qemu-xhci,id=usb", "-device", "usb-kbd", "-device", "usb-tablet",
             "-device", "virtio-balloon-pci"
         ]
-        if record.networkEnabled {
+        if record.networkEnabled || needsAutomaticDisplaySetup {
             arguments += [
-                "-netdev", "user,id=network", "-device", "virtio-net-pci,netdev=network,mac=\(record.macAddress)"
+                "-netdev", (["user", "id=network"] + (record.networkEnabled ? [] : ["restrict=on"]) + record.portForwards.map(\.qemuOption) + (managedSharing.map { [$0.forwardingOption] } ?? [])).joined(separator: ","),
+                "-device", "virtio-net-pci,netdev=network,mac=\(record.macAddress)"
             ]
         }
-        if record.audioOutput {
+        if record.audioOutput || record.microphone {
             arguments += [
-                "-audiodev", "coreaudio,id=audio0", "-device", "intel-hda", "-device", "hda-duplex,audiodev=audio0"
+                "-audiodev", "coreaudio,id=audio0,in.voices=\(record.microphone ? 1 : 0),out.voices=\(record.audioOutput ? 1 : 0)",
+                "-device", "intel-hda", "-device",
+                "\(record.microphone ? "hda-micro" : "hda-output"),audiodev=audio0"
             ]
+        }
+        if let runtime = tpmRuntimeDirectory {
+            arguments += ["-chardev", "socket,id=tpmchar,path=\(runtime.appendingPathComponent("ctrl").path)",
+                          "-tpmdev", "emulator,id=tpm0,chardev=tpmchar",
+                          // QEMU's PPI RAM region is 4 KiB; HVF on 16 KiB-page Macs rejects that mapping.
+                          // The TPM command interface remains available with PPI disabled.
+                          "-device", "tpm-tis-device,tpmdev=tpm0,ppi=off"]
         }
         arguments += [
             "-qmp", "stdio", "-monitor", "none", "-serial", "none"
@@ -321,6 +754,9 @@ final class QEMUVirtualMachine: ObservableObject {
             ]
             if name == "disk" {
                 block["cache"] = ["direct": false, "no-flush": record.diskSyncMode == .fastest]
+                // Request efficient zero writes/discard when the host supports it.
+                // QEMU falls back to zero writes when hole punching is unavailable.
+                block["detect-zeroes"] = "unmap"
             }
             arguments += ["-blockdev", try json(block)]
         }
@@ -332,20 +768,33 @@ final class QEMUVirtualMachine: ObservableObject {
             arguments += ["-blockdev", try json([
                 "driver": "raw", "node-name": "installer", "read-only": true,
                 "file": ["driver": "file", "filename": path]
-            ]), "-device", "usb-bot,id=installer-usb", "-device", "scsi-cd,drive=installer,bus=installer-usb.0,bootindex=\(installerBootIndex)"]
+            ]), "-device", "usb-bot,id=installer-usb", "-device", "scsi-cd,id=lumen-installer,drive=installer,bus=installer-usb.0,bootindex=\(installerBootIndex)"]
+        } else {
+            arguments += ["-device", "usb-bot,id=installer-usb", "-device", "scsi-cd,id=lumen-installer,bus=installer-usb.0"]
         }
-        if let setupMedia = try? prepareSetupMedia() {
+        do {
             arguments += ["-blockdev", try json([
                 "driver": "raw", "node-name": "lumensetup", "read-only": true,
                 "file": ["driver": "file", "filename": setupMedia.path]
-            ]), "-device", "usb-bot,id=setup-usb", "-device", "scsi-cd,drive=lumensetup,bus=setup-usb.0"]
+            ]), "-device", "usb-bot,id=setup-usb", "-device", "scsi-cd,id=lumen-setup,drive=lumensetup,bus=setup-usb.0"]
         }
-        let drivers = location.directory.appendingPathComponent("Drivers.iso")
-        if FileManager.default.isReadableFile(atPath: drivers.path) {
+        if let drivers = driversURL {
+            guard FileManager.default.isReadableFile(atPath: drivers.path) else {
+                throw QEMUError("The Windows driver ISO is missing. Choose it again in Settings.")
+            }
             arguments += ["-blockdev", try json([
                 "driver": "raw", "node-name": "drivers", "read-only": true,
                 "file": ["driver": "file", "filename": drivers.path]
-            ]), "-device", "usb-bot,id=drivers-usb", "-device", "scsi-cd,drive=drivers,bus=drivers-usb.0"]
+            ]), "-device", "usb-bot,id=drivers-usb", "-device", "scsi-cd,id=lumen-drivers,drive=drivers,bus=drivers-usb.0"]
+        } else {
+            arguments += ["-device", "usb-bot,id=drivers-usb", "-device", "scsi-cd,id=lumen-drivers,bus=drivers-usb.0"]
+        }
+        if record.clipboardSharing {
+            // Append after existing PCI devices to preserve their addresses.
+            // Cocoa and qemu-vdagent share QEMU's clipboard bus directly.
+            arguments += ["-device", "virtio-serial-pci,id=lumen-serial",
+                          "-chardev", "qemu-vdagent,id=lumen-clipboard,clipboard=on,mouse=off",
+                          "-device", "virtserialport,bus=lumen-serial.0,chardev=lumen-clipboard,name=com.redhat.spice.0"]
         }
         return arguments
     }
@@ -417,7 +866,8 @@ final class QEMUVirtualMachine: ObservableObject {
                     if let failure = object["error"] as? [String: Any] {
                         finishRequest(id, result: .failure(QEMUError("QEMU \(commandName): \(failure["desc"] as? String ?? "command failed")")))
                     } else {
-                        finishRequest(id, result: .success(object["return"] as? [String: Any] ?? [:]))
+                        let returned = object["return"]
+                        finishRequest(id, result: .success(returned as? [String: Any] ?? ["items": returned ?? []]))
                     }
                     continue
                 }
@@ -468,25 +918,36 @@ final class QEMUVirtualMachine: ObservableObject {
 
     func typePassword(_ text: String) async throws {
         guard state == .running else { throw QEMUError("The machine must be running to receive input.") }
+        guard !isSendingGuestCommand else { throw QEMUError("Wait for the Windows command to finish typing.") }
+        guard GuestKeyboard.supports(text) else {
+            throw QEMUError("Password typing currently requires printable ASCII and a US keyboard layout in the guest. No keys were sent.")
+        }
         for char in text {
+            try Task.checkCancellation()
+            guard state == .running else { throw QEMUError("The guest stopped accepting input.") }
             try await sendCharacter(char)
-            try? await Task.sleep(nanoseconds: 25_000_000)
+            try await Task.sleep(nanoseconds: 65_000_000)
         }
         try await sendKey("ret")
     }
 
-    private func sendCharacter(_ char: Character) async throws {
+    private func sendCharacter(_ char: Character, holdTime: Int = 50) async throws {
         let (qcode, shift) = qcodeForChar(char)
-        if shift {
-            _ = try await request("send-key", arguments: [
-                "keys": [["type": "qcode", "data": "shift"], ["type": "qcode", "data": qcode]],
-                "hold-time": 50
-            ])
-        } else {
-            _ = try await request("send-key", arguments: [
-                "keys": [["type": "qcode", "data": qcode]],
-                "hold-time": 50
-            ])
+        let keys = (shift ? ["shift"] : []) + [qcode]
+        func events(_ down: Bool) -> [[String: Any]] {
+            (down ? keys : keys.reversed().map { $0 }).map {
+                ["type": "key", "data": ["down": down, "key": ["type": "qcode", "data": $0]]]
+            }
+        }
+        // send-key uses a shared release timer. Under load, consecutive characters can
+        // overlap and leave a key repeating. Acknowledge each explicit release instead.
+        do {
+            _ = try await request("input-send-event", arguments: ["events": events(true)])
+            try await Task.sleep(nanoseconds: UInt64(holdTime) * 1_000_000)
+            _ = try await request("input-send-event", arguments: ["events": events(false)])
+        } catch {
+            _ = try? await request("input-send-event", arguments: ["events": events(false)])
+            throw error
         }
     }
 
@@ -605,6 +1066,36 @@ final class QEMUVirtualMachine: ObservableObject {
     }
 
     private func cleanup() {
+        displaySetupTask?.cancel()
+        displaySetupTask = nil
+        if let directory = displayReceiptDirectory { try? FileManager.default.removeItem(at: directory) }
+        displayReceiptDirectory = nil
+        displaySetup = nil
+        managedSharing?.stop()
+        managedSharing = nil
+        if let observer = menuControlObserver { DistributedNotificationCenter.default().removeObserver(observer) }
+        menuControlObserver = nil
+        menuStatusObservation = nil
+        menuBridgeReady = false
+        isSendingGuestCommand = false
+        if let root = processBundleRoot, process?.isRunning != true { try? FileManager.default.removeItem(at: root) }
+        processBundleRoot = nil
+        if let tpm = tpmProcess, tpm.processIdentifier > 0 {
+            if tpm.isRunning { tpm.terminate() }
+            let runtime = tpmRuntimeDirectory
+            // Reap after termination; never delete persistent TPM state or leave a live helper behind.
+            Task.detached {
+                for _ in 0..<30 {
+                    if !tpm.isRunning { break }
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                if tpm.isRunning { kill(tpm.processIdentifier, SIGKILL) }
+                tpm.waitUntilExit()
+                if let runtime { try? FileManager.default.removeItem(at: runtime) }
+            }
+        } else if let runtime = tpmRuntimeDirectory { try? FileManager.default.removeItem(at: runtime) }
+        tpmProcess = nil
+        tpmRuntimeDirectory = nil
         startupTimeout?.cancel()
         stopTimeout?.cancel()
         outputPipe?.fileHandleForReading.readabilityHandler = nil

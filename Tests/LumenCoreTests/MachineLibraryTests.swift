@@ -33,6 +33,23 @@ final class MachineLibraryTests: XCTestCase {
         XCTAssertEqual(try SparseDisk.usage(at: disk), written)
     }
 
+    func testPermanentDeletionRemovesSparseDiskAndKeepsExternalInstaller() throws {
+        let library = try MachineLibrary(root: temporary.appendingPathComponent("Machines"))
+        let installer = temporary.appendingPathComponent("installer.iso")
+        try Data("original installer".utf8).write(to: installer)
+        let record = VirtualMachineRecord(name: "Disposable", guest: .ubuntu, installerPath: installer.path)
+        try library.create(record)
+        let location = library.location(for: record.id)
+        let handle = try FileHandle(forWritingTo: location.disk)
+        try handle.write(contentsOf: Data(repeating: 0xA5, count: 1_048_576))
+        try handle.close()
+        XCTAssertGreaterThan(try SparseDisk.usage(at: location.disk).allocatedBytes, 0)
+        try library.deletePermanently(record.id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: location.directory.path))
+        XCTAssertEqual(try Data(contentsOf: installer), Data("original installer".utf8))
+        XCTAssertThrowsError(try library.deletePermanently(record.id))
+    }
+
     func testLibraryPersistsResourcesIdentityAndInstallerEject() throws {
         let library = try MachineLibrary(root: temporary)
         var record = VirtualMachineRecord(name: "Debian / work", guest: .debian, installerPath: "/install/debian-arm64.iso")

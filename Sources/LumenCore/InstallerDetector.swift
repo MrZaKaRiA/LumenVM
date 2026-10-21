@@ -83,8 +83,15 @@ struct ISO9660Reader {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         self.handle = handle
         // Volume descriptors start at sector 16 (2048-byte logical sectors).
-        guard let pvd = Self.read(handle, offset: 16 * 2048, length: 2048), pvd.count == 2048,
-              pvd[0] == 1, String(decoding: pvd[1..<6], as: UTF8.self) == "CD001" else {
+        // A boot record may precede the primary descriptor; sector 16 is not always the PVD.
+        var primary: Data?
+        for sector in 16..<48 {
+            guard let descriptor = Self.read(handle, offset: UInt64(sector * 2048), length: 2048),
+                  descriptor.count == 2048, String(decoding: descriptor[1..<6], as: UTF8.self) == "CD001" else { break }
+            if descriptor[0] == 1 { primary = descriptor; break }
+            if descriptor[0] == 255 { break }
+        }
+        guard let pvd = primary else {
             try? handle.close()
             return nil
         }
@@ -116,7 +123,7 @@ struct ISO9660Reader {
             let recordLength = Int(data[data.startIndex + offset])
             if recordLength == 0 {
                 // Records never cross sector boundaries; skip the sector's padding.
-                offset = (offset / 2048 + 1) * 2048
+                offset = (offset / blockSize + 1) * blockSize
                 continue
             }
             guard recordLength >= 34, offset + recordLength <= data.count else { break }

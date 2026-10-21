@@ -81,6 +81,7 @@ extension GuestOS {
         case .debian: return Color(red: 0.99, green: 0.44, blue: 0.58)
         case .arch: return Color(red: 0.41, green: 0.74, blue: 0.99)
         case .voidLinux: return Color(red: 0.66, green: 0.83, blue: 0.39)
+        case .abyssLinux: return Color(red: 0.659, green: 0.333, blue: 0.969) // #a855f7
         case .linux: return Color(red: 0.86, green: 0.76, blue: 0.53)
         case .windows: return Color(red: 0.46, green: 0.71, blue: 1)
         case .android: return Color(red: 0.60, green: 0.83, blue: 0.51)
@@ -95,6 +96,7 @@ extension GuestOS {
         case .debian: return "ARM64 · ISO"
         case .arch: return "ARM64 · custom image"
         case .voidLinux: return "AArch64 · custom image"
+        case .abyssLinux: return "AArch64 · dwm live ISO"
         case .linux: return "ARM64 · UEFI ISO"
         case .windows: return "ARM64 · experimental"
         case .android: return "Not available yet"
@@ -108,6 +110,22 @@ struct GuestGlyph: View {
     var size: CGFloat = 26
 
     var body: some View {
+        if let logo = GuestLogo.image(for: guest) {
+            Image(nsImage: logo)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fill)
+                .frame(width: size * 1.05, height: size * 1.05)
+                .clipShape(Circle())
+                .overlay { Circle().strokeBorder(guest.tint.opacity(0.45), lineWidth: max(1, size * 0.04)) }
+                .frame(width: size * 1.15, height: size * 1.15)
+                .accessibilityHidden(true)
+        } else {
+            symbolGlyph
+        }
+    }
+
+    private var symbolGlyph: some View {
         Group {
             switch guest {
             case .macOS:
@@ -136,6 +154,8 @@ struct GuestGlyph: View {
                 Image(systemName: "hurricane").font(.system(size: size, weight: .medium))
             case .voidLinux:
                 Image(systemName: "circle.hexagongrid.fill").font(.system(size: size * 0.9, weight: .medium))
+            case .abyssLinux:
+                Image(systemName: guest.symbol).font(.system(size: size * 0.9, weight: .medium))
             case .linux:
                 Image(systemName: "terminal.fill").font(.system(size: size * 0.9, weight: .medium))
             case .android:
@@ -211,6 +231,34 @@ struct TinyLabel: View {
     }
 }
 
+// MARK: - Bundled Guest Logos
+
+/// Raster logos shipped in `Contents/Resources/GuestLogos`, used instead of SF Symbols when present.
+@MainActor
+enum GuestLogo {
+    private static var cache: [GuestOS: NSImage] = [:]
+    private static var missing: Set<GuestOS> = []
+
+    static func resourceName(for guest: GuestOS) -> String? {
+        switch guest {
+        case .abyssLinux: return "abyss"
+        default: return nil
+        }
+    }
+
+    static func image(for guest: GuestOS) -> NSImage? {
+        if let cached = cache[guest] { return cached }
+        guard !missing.contains(guest), let name = resourceName(for: guest),
+              let url = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "GuestLogos"),
+              let image = NSImage(contentsOf: url) else {
+            missing.insert(guest)
+            return nil
+        }
+        cache[guest] = image
+        return image
+    }
+}
+
 // MARK: - Dynamic Guest Dock Icon Generator
 
 @MainActor
@@ -219,6 +267,12 @@ public enum GuestIconGenerator {
 
     public static func icon(for guest: GuestOS) -> NSImage {
         if let cached = iconCache[guest] { return cached }
+
+        if let logo = GuestLogo.image(for: guest) {
+            let image = logoIcon(logo, tint: guest.tint)
+            iconCache[guest] = image
+            return image
+        }
 
         let iconView = ZStack {
             RoundedRectangle(cornerRadius: 56, style: .continuous)
@@ -240,6 +294,24 @@ public enum GuestIconGenerator {
         let image = renderer.nsImage ?? NSImage()
         iconCache[guest] = image
         return image
+    }
+
+    /// A Dock-sized squircle filled edge to edge with the guest's own artwork.
+    private static func logoIcon(_ logo: NSImage, tint: Color) -> NSImage {
+        let shape = RoundedRectangle(cornerRadius: 56, style: .continuous)
+        let iconView = Image(nsImage: logo)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fill)
+            .frame(width: 228, height: 228)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(tint.opacity(0.55), lineWidth: 2))
+            .shadow(color: Color.black.opacity(0.35), radius: 10, y: 5)
+            .frame(width: 256, height: 256)
+
+        let renderer = ImageRenderer(content: iconView)
+        renderer.scale = 2.0
+        return renderer.nsImage ?? logo
     }
 
     private static func gradient(for guest: GuestOS) -> LinearGradient {
@@ -272,6 +344,11 @@ public enum GuestIconGenerator {
         case .voidLinux:
             return LinearGradient(
                 colors: [Color(red: 0.38, green: 0.68, blue: 0.28), Color(red: 0.12, green: 0.32, blue: 0.12)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        case .abyssLinux:
+            return LinearGradient(
+                colors: [Color(red: 0.66, green: 0.33, blue: 0.97), Color(red: 0.16, green: 0.05, blue: 0.32)],
                 startPoint: .topLeading, endPoint: .bottomTrailing
             )
         case .linux:

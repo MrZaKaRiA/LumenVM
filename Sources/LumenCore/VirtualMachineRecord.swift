@@ -1,7 +1,7 @@
 import Foundation
 
 public enum GuestOS: String, Codable, CaseIterable, Identifiable {
-    case macOS, ubuntu, debian, arch, voidLinux, linux, windows, android, chromeOS
+    case macOS, ubuntu, debian, arch, voidLinux, abyssLinux, linux, windows, android, chromeOS
 
     public var id: String { rawValue }
     public var title: String {
@@ -11,6 +11,7 @@ public enum GuestOS: String, Codable, CaseIterable, Identifiable {
         case .debian: return "Debian"
         case .arch: return "Arch Linux ARM"
         case .voidLinux: return "Void Linux"
+        case .abyssLinux: return "Abyss Linux"
         case .linux: return "Linux"
         case .windows: return "Windows 11 ARM"
         case .android: return "Android"
@@ -23,6 +24,7 @@ public enum GuestOS: String, Codable, CaseIterable, Identifiable {
         case .ubuntu, .debian, .linux: return "ARM64 · UEFI installer"
         case .arch: return "Advanced · ARM64 UEFI image required"
         case .voidLinux: return "Advanced · ARM64 UEFI image required"
+        case .abyssLinux: return "Void-based · dwm · AArch64 UEFI ISO"
         case .windows: return "QEMU · TPM 2.0 · ARM64 ISO"
         case .android: return "A dedicated emulator backend is needed"
         case .chromeOS: return "No supported generic ARM64 installer"
@@ -35,6 +37,7 @@ public enum GuestOS: String, Codable, CaseIterable, Identifiable {
         case .debian: return "hurricane"
         case .arch: return "triangle.fill"
         case .voidLinux: return "circle.hexagongrid.fill"
+        case .abyssLinux: return "tornado"
         case .linux: return "terminal.fill"
         case .windows: return "square.grid.2x2.fill"
         case .android: return "antenna.radiowaves.left.and.right"
@@ -42,14 +45,14 @@ public enum GuestOS: String, Codable, CaseIterable, Identifiable {
         }
     }
     public var isMacOS: Bool { self == .macOS }
-    public var isLinux: Bool { [.ubuntu, .debian, .arch, .voidLinux, .linux].contains(self) }
+    public var isLinux: Bool { [.ubuntu, .debian, .arch, .voidLinux, .abyssLinux, .linux].contains(self) }
     public var isAvailable: Bool { self != .android && self != .chromeOS }
     public var usesAppleVirtualization: Bool { self != .windows && isAvailable }
     public var minimumMemoryGiB: Int { (self == .macOS || self == .windows) ? 4 : 2 }
     public var minimumDiskGiB: Int { (self == .macOS || self == .windows) ? 64 : 16 }
 }
 
-public enum VMRuntimeState: String {
+public enum VMRuntimeState: String, Codable {
     case stopped, starting, running, paused, stopping, installing, failed
     public var title: String { rawValue.capitalized }
     public var isActive: Bool { self != .stopped && self != .failed }
@@ -74,8 +77,8 @@ public enum DiskSyncMode: String, Codable, CaseIterable, Identifiable {
     }
     public var detail: String {
         switch self {
-        case .balanced: return "Recommended. Smooth installs, safe if Lumen quits unexpectedly."
-        case .safest: return "Flushes the SSD cache on every guest sync. Installers can freeze."
+        case .balanced: return "Recommended. Cached writes with disk flushes preserved for fast installation and normal use."
+        case .safest: return "Also flushes the SSD hardware cache on every guest sync. Installation can take longer."
         case .fastest: return "No flushes. A Mac crash or power loss may corrupt the guest."
         }
     }
@@ -91,7 +94,18 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
     public var memoryGiB: Int
     public var diskGiB: Int
     public var installerPath: String?
+    /// A shared, read-only driver disc; never copied into each machine's disk.
+    public var windowsDriversPath: String?
     public var sharedDirectoryPath: String?
+    public var additionalSharedFolders: [SharedFolder]
+    public var sharedFolders: [SharedFolder] {
+        get { (sharedDirectoryPath.map { [SharedFolder(path: $0, readOnly: sharedFolderReadOnly)] } ?? []) + additionalSharedFolders }
+        set {
+            sharedDirectoryPath = newValue.first?.path
+            sharedFolderReadOnly = newValue.first?.readOnly ?? false
+            additionalSharedFolders = Array(newValue.dropFirst())
+        }
+    }
     public var sharedFolderReadOnly: Bool
     public var macAddress: String
     public var createdAt: Date
@@ -112,6 +126,11 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
     // Windows
     public var windowsTPM: Bool
     public var windowsBypassChecks: Bool
+    /// Requests local account creation during a new Windows installation.
+    public var windowsLocalAccount: Bool
+    public var windowsCompatibilityDisplay: Bool
+    public var windowsAutomaticDisplaySetup: Bool
+    public var portForwards: [PortForward]
 
     public init(id: UUID = UUID(), name: String, guest: GuestOS, distribution: String? = nil,
                 cpuCount: Int = 4, memoryGiB: Int = 4, diskGiB: Int = 64, installerPath: String? = nil,
@@ -121,7 +140,8 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
                 clipboardSharing: Bool = true, audioOutput: Bool = true, microphone: Bool = false,
                 networkEnabled: Bool = true, captureSystemKeys: Bool = true,
                 diskSyncMode: DiskSyncMode = .balanced, autoEjectInstaller: Bool = true,
-                windowsTPM: Bool = true, windowsBypassChecks: Bool = true) {
+                windowsTPM: Bool = true, windowsBypassChecks: Bool = true, windowsDriversPath: String? = nil,
+                portForwards: [PortForward] = [], windowsCompatibilityDisplay: Bool? = nil, additionalSharedFolders: [SharedFolder] = [], windowsLocalAccount: Bool = true, windowsAutomaticDisplaySetup: Bool = true) {
         self.id = id
         self.name = name
         self.guest = guest
@@ -130,8 +150,10 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
         self.memoryGiB = memoryGiB
         self.diskGiB = diskGiB
         self.installerPath = installerPath
+        self.windowsDriversPath = windowsDriversPath
         self.sharedDirectoryPath = sharedDirectoryPath
         self.sharedFolderReadOnly = sharedFolderReadOnly
+        self.additionalSharedFolders = additionalSharedFolders
         self.macAddress = macAddress ?? Self.defaultMACAddress(for: id)
         self.createdAt = createdAt
         let display = Self.defaultDisplay(for: guest)
@@ -147,6 +169,10 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
         self.autoEjectInstaller = autoEjectInstaller
         self.windowsTPM = windowsTPM
         self.windowsBypassChecks = windowsBypassChecks
+        self.windowsLocalAccount = windowsLocalAccount
+        self.windowsCompatibilityDisplay = windowsCompatibilityDisplay ?? false
+        self.windowsAutomaticDisplaySetup = guest == .windows && windowsAutomaticDisplaySetup
+        self.portForwards = portForwards
     }
 
     /// Machines created by earlier versions only store a subset of these keys.
@@ -163,8 +189,10 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
         memoryGiB = try c.decode(Int.self, forKey: .memoryGiB)
         diskGiB = try c.decode(Int.self, forKey: .diskGiB)
         installerPath = try c.decodeIfPresent(String.self, forKey: .installerPath)
+        windowsDriversPath = try c.decodeIfPresent(String.self, forKey: .windowsDriversPath)
         sharedDirectoryPath = try c.decodeIfPresent(String.self, forKey: .sharedDirectoryPath)
         sharedFolderReadOnly = try c.decodeIfPresent(Bool.self, forKey: .sharedFolderReadOnly) ?? false
+        additionalSharedFolders = try c.decodeIfPresent([SharedFolder].self, forKey: .additionalSharedFolders) ?? []
         macAddress = try c.decodeIfPresent(String.self, forKey: .macAddress) ?? Self.defaultMACAddress(for: id)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         displayWidth = try c.decodeIfPresent(Int.self, forKey: .displayWidth) ?? display.width
@@ -179,6 +207,11 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
         autoEjectInstaller = try c.decodeIfPresent(Bool.self, forKey: .autoEjectInstaller) ?? true
         windowsTPM = try c.decodeIfPresent(Bool.self, forKey: .windowsTPM) ?? true
         windowsBypassChecks = try c.decodeIfPresent(Bool.self, forKey: .windowsBypassChecks) ?? true
+        windowsLocalAccount = try c.decodeIfPresent(Bool.self, forKey: .windowsLocalAccount) ?? false
+        // Older Windows disks may have no display driver. Keep them visible for driver staging.
+        windowsCompatibilityDisplay = try c.decodeIfPresent(Bool.self, forKey: .windowsCompatibilityDisplay) ?? (guest == .windows)
+        windowsAutomaticDisplaySetup = try c.decodeIfPresent(Bool.self, forKey: .windowsAutomaticDisplaySetup) ?? false
+        portForwards = try c.decodeIfPresent([PortForward].self, forKey: .portForwards) ?? []
     }
 
     public static func defaultMACAddress(for id: UUID) -> String {
@@ -189,7 +222,7 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
     public static func defaultDisplay(for guest: GuestOS) -> (width: Int, height: Int) {
         switch guest {
         case .macOS: return (2560, 1600)   // 1280×800 points at 2×: crisp and readable.
-        case .windows: return (1280, 800)  // Only a hint: the ramfb framebuffer is set by firmware.
+        case .windows: return (2560, 1600) // 1280×800 points on a Retina screen; needs ARM64 display drivers.
         default: return (1920, 1200)
         }
     }
@@ -210,6 +243,23 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
         }
         guard (640...7680).contains(displayWidth), (480...4320).contains(displayHeight) else {
             throw LibraryError.invalidConfiguration("Choose a display between 640×480 and 7680×4320.")
+        }
+        if let path = windowsDriversPath, URL(fileURLWithPath: path).pathExtension.lowercased() != "iso" {
+            throw LibraryError.invalidConfiguration("Choose a VirtIO Windows driver disc in .iso format.")
+        }
+        guard portForwards.count <= 16, portForwards.isEmpty || guest == .windows else {
+            throw LibraryError.invalidConfiguration("Up to 16 port forwarding rules are supported for Windows QEMU guests.")
+        }
+        guard sharedFolders.count <= 32, Set(sharedFolders.map(\.path)).count == sharedFolders.count,
+              sharedFolders.allSatisfy({ $0.path.hasPrefix("/") && !$0.path.contains("\0") }) else {
+            throw LibraryError.invalidConfiguration("Choose up to 32 distinct folders with valid absolute paths.")
+        }
+        var endpoints: Set<String> = []
+        for rule in portForwards {
+            try rule.validate()
+            guard endpoints.insert("\(rule.transport.rawValue):\(rule.hostPort)").inserted else {
+                throw LibraryError.invalidConfiguration("Two forwarding rules cannot listen on the same host port and protocol.")
+            }
         }
         if let path = installerPath {
             let filename = URL(fileURLWithPath: path).lastPathComponent.lowercased()

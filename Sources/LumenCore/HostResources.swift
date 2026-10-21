@@ -52,7 +52,11 @@ public struct ResourcePolicy: Equatable {
     public func recommended(for guest: GuestOS, distribution: LinuxDistribution? = nil, on host: HostResources) -> (cpus: Int, memoryGiB: Int, diskGiB: Int) {
         let cpuCap = maxCPUsPerMachine(on: host)
         let memoryCap = guestMemoryBudgetGiB(on: host)
-        let cpus = min(cpuCap, max(2, min(host.performanceCores / 2 + 2, 6)))
+        // Windows Setup decompresses large WIM images. Use the performance-core
+        // budget for Windows instead of the smaller interactive Linux default.
+        let cpus = guest == .windows
+            ? min(cpuCap, max(2, host.performanceCores))
+            : min(cpuCap, max(2, min(host.performanceCores / 2 + 2, 6)))
         let memory: Int
         let disk: Int
         switch guest {
