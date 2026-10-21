@@ -1,5 +1,36 @@
 # Changelog
 
+## v27.1.0
+
+Source release for Apple Silicon. Security hardening, performance work and new opt-in Apple Virtualization features. Windows remains experimental; these changes have not yet been exercised against live Windows or Linux guests.
+
+### Security
+
+- Release builds inject only the `LumenQEMUHelper.dylib` sealed into the app's signature; working-directory, VM-bundle and runtime `clang` fallbacks are debug-only.
+- Windows guest commands verify a fresh random marker on the `LUMENSETUP` disc, so a spoofed ISO with the same label is not executed.
+- The Windows startup shortcut runs only `%ProgramData%\Lumen\Tools`, owned by Administrators and writable only by Administrators/SYSTEM.
+- Shared-folder credentials are stored per Windows user with `cmdkey` instead of being embedded in a world-readable script.
+- VirtIO driver preparation checks a committed SHA-256 manifest.
+- The app is signed with the hardened runtime; the unused hypervisor entitlement is removed and audio-input is declared so VM microphones keep working.
+
+### Performance
+
+- QEMU receives an explicit CPU topology (one socket, N cores).
+- The Windows setup ISO is reused when its staged contents are unchanged, skipping `hdiutil` on every boot.
+- The library polls disk usage only while a machine is active and redraws only when values change.
+- macOS install progress updates are throttled; the QEMU display helper no longer creates a color space per frame.
+- Installer detection runs off the main thread.
+
+### Apple Virtualization features
+
+- Opt-in Rosetta for Linux guests, with guest-tools binfmt registration; Linux guest tools also enable `fstrim.timer` so sparse disks can shrink.
+- Opt-in nested virtualization on supported hosts (macOS 15+, M3 or later).
+- Download the latest supported macOS restore image from the new-machine flow.
+
+### Validation
+
+- 42 core tests and the display-redraw regression pass; the app builds and passes deep/strict signature verification.
+
 ## v27.0.1
 
 Source release for Apple Silicon. This version consolidates the current Lumen implementation and fixes; Windows remains experimental.

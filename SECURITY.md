@@ -16,4 +16,4 @@ Touch ID login helpers type a stored guest password into the focused guest field
 
 ## Releases
 
-v27.0.1 is a source release. Build scripts download pinned third-party dependencies; review [third-party notices](THIRD_PARTY_NOTICES.md). Locally built apps use ad-hoc signing and are not notarized. Do not treat a passing build or signature verification as a production security assessment.
+v27.1.0 is a source release. Build scripts download pinned third-party dependencies; review [third-party notices](THIRD_PARTY_NOTICES.md). Locally built apps use ad-hoc signing and are not notarized. Do not treat a passing build or signature verification as a production security assessment.

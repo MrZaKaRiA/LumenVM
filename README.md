@@ -4,7 +4,7 @@
 
 A SwiftUI app for running macOS, ARM64 Linux and experimental Windows 11 ARM64 guests. A translucent machine library, separate VM windows and disks that grow as you use them make virtual machines feel at home on your Mac.
 
-[Release v27.0.1](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.0.1) · [User guide](docs/user-guide.md) · [Compatibility](docs/compatibility.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
+[Release v27.1.0](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.1.0) · [User guide](docs/user-guide.md) · [Compatibility](docs/compatibility.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
 <p align="center"><img src="assets/lumen_ui.png" alt="Lumen's native macOS virtual machine library, shown with demo machines" width="920"></p>
 
@@ -13,6 +13,7 @@ A SwiftUI app for running macOS, ARM64 Linux and experimental Windows 11 ARM64 g
 - **Native macOS interface:** SwiftUI library, per-machine settings, guest windows and OS icons. macOS and Linux guests run in separate app processes with their own Dock tiles.
 - **Sparse storage:** the virtual disk's capacity is a limit, not SSD space reserved upfront. Lumen displays allocated disk blocks and supports growing stopped disks.
 - **Apple Silicon virtualization:** macOS and compatible ARM64 Linux through Apple's Virtualization framework; Windows 11 ARM64 through QEMU with HVF.
+- **Rosetta and nested virtualization:** opt-in Rosetta for running x86-64 Linux binaries in Linux guests, nested virtualization on supported hosts (macOS 15+, M3 or later) and one-click download of the latest supported macOS restore image.
 - **Display and input:** configurable resolution, automatic resizing where the guest supports it, Retina display controls and native full-screen windows.
 - **Linux guest tools:** package-manager setup for SPICE text clipboard, VirtioFS shared folders, X11 desktop startup and Void/runit services. Command-C/V supports desktop and terminal shortcut modes.
 - **Windows integration:** ARM64 VirtIO driver media and repair tools, experimental automatic setup, 2D display resizing, private shared folders and optional localhost port forwarding.
@@ -31,9 +32,9 @@ A SwiftUI app for running macOS, ARM64 Linux and experimental Windows 11 ARM64 g
 
 This release does **not** provide Windows Direct3D/Metal acceleration, snapshots/clones, Parallels import, native Wayland clipboard, macOS clipboard, file clipboard, arbitrary guest-desktop drag-and-drop or printer sharing. The [feature audit](docs/feature-audit.md) separates implemented features from remaining work.
 
-## Get v27.0.1
+## Get v27.1.0
 
-v27.0.1 is a **source release**. Download the [release](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.0.1), or clone the repository, then build on an Apple Silicon Mac. A notarized standalone installer is not included.
+v27.1.0 is a **source release**. Download the [release](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.1.0), or clone the repository, then build on an Apple Silicon Mac. A notarized standalone installer is not included.
 
 ### Requirements
 
@@ -45,7 +46,7 @@ v27.0.1 is a **source release**. Download the [release](https://github.com/MrZaK
 ```sh
 git clone https://github.com/MrZaKaRiA/LumensVM.git
 cd LumensVM
-git checkout v27.0.1
+git checkout v27.1.0
 brew install qemu swtpm python@3.14 sevenzip
 bash scripts/build.sh
 open build/Lumen.app
@@ -74,7 +75,7 @@ codesign --verify --deep --strict build/Lumen.app
 bash scripts/release-audit.sh
 ```
 
-The latest local validation passed 38 core tests, the display-redraw regression and live Abyss lifecycle/Dock checks. Windows private-sharing transport has separate tests. These checks do not certify every guest or a production-ready Windows installation. The release audit deliberately reports missing notarization and standalone runtime packaging. Detailed results are in [validation](docs/validation.md).
+The latest local validation passed 42 core tests and the display-redraw regression; earlier releases also passed live Abyss lifecycle/Dock checks. The v27.1.0 security, performance and Rosetta/nested-virtualization changes have not yet been exercised against live guests. Windows private-sharing transport has separate tests. These checks do not certify every guest or a production-ready Windows installation. The release audit deliberately reports missing notarization and standalone runtime packaging. Detailed results are in [validation](docs/validation.md).
 
 ## Documentation and contributing
 

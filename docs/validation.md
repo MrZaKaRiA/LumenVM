@@ -138,3 +138,7 @@ All 38 core tests passed, including fragmented/bounded control messages and excl
 Fresh release preparation passed all 38 core tests, the fractional display-redraw regression and private signed-SMB2 transport/permission tests. Release compilation completed with both app version strings set to 27.0.1, and deep/strict ad-hoc signature verification passed. Local documentation links and plist/shell syntax were checked. Source packaging rejects mismatched versions and uncommitted work; staged source and historical text blobs were checked for common credential patterns and generated VM/runtime files.
 
 This publication is source-only. No guest disk, installer image, downloaded runtime binary, credential file or local app bundle is included. The standalone-distribution blockers in the release audit remain documented. The user's running guest was not restarted for release preparation.
+
+## v27.1.0 source release
+
+Release preparation passed all 42 core tests and the fractional display-redraw regression. Release compilation completed with both app version strings set to 27.1.0, the app is signed with the hardened runtime, and deep/strict ad-hoc signature verification passed. The security hardening, QEMU/library performance changes, Rosetta, nested virtualization and macOS restore-image download were verified by build and unit tests only; no live Windows, Linux or macOS guest was exercised for this release.

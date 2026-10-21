@@ -1,6 +1,6 @@
 # Third-party notices
 
-Lumen's original code is MIT licensed. That license does not replace the licenses of separately downloaded components or guest operating systems. The v27.0.1 source archive excludes generated runtimes, driver ISOs, guest-agent executables and OS installers.
+Lumen's original code is MIT licensed. That license does not replace the licenses of separately downloaded components or guest operating systems. The v27.1.0 source archive excludes generated runtimes, driver ISOs, guest-agent executables and OS installers.
 
 ## Host frameworks and runtimes
 

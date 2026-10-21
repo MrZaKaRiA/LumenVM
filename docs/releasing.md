@@ -7,10 +7,10 @@
 3. Run `bash scripts/check.sh`, `bash scripts/build.sh`, `codesign --verify --deep --strict build/Lumen.app` and `git diff --check`.
 4. Check the staged source for credentials, VM bundles, OS installers, generated runtime dependencies and personal screenshots. These do not belong in Git.
 5. Commit the source and create an annotated `vMAJOR.MINOR.PATCH` tag matching the app version.
-6. Run `bash scripts/package-source-release.sh v27.0.1`. It requires a clean checkout with the tag at HEAD and creates a source ZIP and `SHA256SUMS` under `build/releases/v27.0.1/`.
+6. Run `bash scripts/package-source-release.sh v27.1.0`. It requires a clean checkout with the tag at HEAD and creates a source ZIP and `SHA256SUMS` under `build/releases/v27.1.0/`.
 7. Push the reviewed commit/tag, then create the GitHub release with its notes, source ZIP and checksums. Verify the published tag and assets.
 
-v27.0.1 is a source release. The GitHub source downloads and explicitly packaged source ZIP contain the same tagged tree; build outputs and runtime downloads remain excluded.
+v27.1.0 is a source release. The GitHub source downloads and explicitly packaged source ZIP contain the same tagged tree; build outputs and runtime downloads remain excluded.
 
 ## Future standalone app release
 
