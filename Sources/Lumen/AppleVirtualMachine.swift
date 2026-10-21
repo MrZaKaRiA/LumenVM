@@ -45,6 +45,11 @@ final class AppleVirtualMachine: NSObject, ObservableObject, VZVirtualMachineDel
         state = .starting
         errorMessage = nil
         do {
+            if record.guest.isLinux, record.linuxRosetta, VZLinuxRosettaDirectoryShare.availability == .notInstalled {
+                // Shows Apple's license prompt; the guest cannot use Rosetta until it is accepted.
+                do { try await VZLinuxRosettaDirectoryShare.installRosetta() }
+                catch { throw EngineError.message("Rosetta is not installed. Install it when prompted, or turn off Rosetta in this VM's settings. (\(error.localizedDescription))") }
+            }
             let configuration = try makeConfiguration(bootInstaller: bootInstaller)
             let machine = VZVirtualMachine(configuration: configuration)
             machine.delegate = self
@@ -241,6 +246,12 @@ final class AppleVirtualMachine: NSObject, ObservableObject, VZVirtualMachineDel
                 try identifier.dataRepresentation.write(to: location.machineIdentifier, options: .atomic)
                 platform.machineIdentifier = identifier
             }
+            if record.nestedVirtualization {
+                guard #available(macOS 15.0, *), VZGenericPlatformConfiguration.isNestedVirtualizationSupported else {
+                    throw EngineError.message("Nested virtualization needs macOS 15 and an M3 or later Mac. Turn it off in this VM's settings.")
+                }
+                platform.isNestedVirtualizationEnabled = true
+            }
             configuration.platform = platform
             let graphics = VZVirtioGraphicsDeviceConfiguration()
             graphics.scanouts = [VZVirtioGraphicsScanoutConfiguration(widthInPixels: record.displayWidth, heightInPixels: record.displayHeight)]
@@ -306,12 +317,18 @@ final class AppleVirtualMachine: NSObject, ObservableObject, VZVirtualMachineDel
         if !record.guest.isMacOS {
             let toolsURL = location.directory.appendingPathComponent("GuestTools", isDirectory: true)
             try FileManager.default.createDirectory(at: toolsURL, withIntermediateDirectories: true)
-            for (name, script) in LinuxGuestTools.files(sharedFolders: !record.sharedFolders.isEmpty) {
+            let rosetta = record.linuxRosetta && VZLinuxRosettaDirectoryShare.availability == .installed
+            for (name, script) in LinuxGuestTools.files(sharedFolders: !record.sharedFolders.isEmpty, rosetta: rosetta) {
                 try Data(script.utf8).write(to: toolsURL.appendingPathComponent(name), options: .atomic)
             }
             let tools = VZVirtioFileSystemDeviceConfiguration(tag: LinuxGuestTools.tag)
             tools.share = VZSingleDirectoryShare(directory: VZSharedDirectory(url: toolsURL, readOnly: true))
             configuration.directorySharingDevices.append(tools)
+            if rosetta {
+                let share = VZVirtioFileSystemDeviceConfiguration(tag: LinuxGuestTools.rosettaTag)
+                share.share = try VZLinuxRosettaDirectoryShare()
+                configuration.directorySharingDevices.append(share)
+            }
         }
         if !record.sharedFolders.isEmpty {
             var directories: [String: VZSharedDirectory] = [:]

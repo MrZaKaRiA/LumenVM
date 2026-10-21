@@ -3,10 +3,15 @@ import Foundation
 /// Read-only VirtioFS tools; installation and desktop integration run in the guest.
 public enum LinuxGuestTools {
     public static let tag = "lumentools"
+    /// VirtioFS tag of the Rosetta share; the guest mounts it at `rosettaMountPoint`.
+    public static let rosettaTag = "rosetta"
+    public static let rosettaMountPoint = "/media/rosetta"
+    /// binfmt_misc registration for x86_64 ELF binaries, as documented by Apple.
+    public static let rosettaBinfmt = #":rosetta:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/media/rosetta/rosetta:CF"#
     public static let installCommand = "sudo mkdir -p /mnt/lumen-tools && (mountpoint -q /mnt/lumen-tools || sudo mount -t virtiofs lumentools /mnt/lumen-tools) && bash /mnt/lumen-tools/setup.sh"
 
-    public static func files(sharedFolders: Bool) -> [String: String] {
-        ["install.sh": installer(sharedFolders: sharedFolders), "setup.sh": setupScript,
+    public static func files(sharedFolders: Bool, rosetta: Bool = false) -> [String: String] {
+        ["install.sh": installer(sharedFolders: sharedFolders, rosetta: rosetta), "setup.sh": setupScript,
          "session.sh": sessionScript, "runit.sh": runitScript]
     }
 
@@ -35,7 +40,7 @@ public enum LinuxGuestTools {
     exit "$result"
     """#
 
-    public static func installer(sharedFolders: Bool) -> String {
+    public static func installer(sharedFolders: Bool, rosetta: Bool = false) -> String {
         #"""
         #!/bin/bash
         set -uo pipefail
@@ -85,6 +90,10 @@ public enum LinuxGuestTools {
           fi
           systemctl start spice-vdagentd.service || failed=1
           systemctl is-active spice-vdagentd.service || failed=1
+          # Return freed guest blocks to the Mac so the sparse disk file can shrink.
+          if systemctl cat fstrim.timer >/dev/null 2>&1; then
+            systemctl enable --now fstrim.timer || echo 'Could not enable fstrim.timer; run fstrim -av occasionally to reclaim disk space.' >&2
+          fi
         elif [ -d /etc/sv ] && [ -d /var/service ] && command -v sv >/dev/null; then
           bash ./runit.sh /etc/sv /var/service dbus spice-vdagentd || failed=1
         else
@@ -114,6 +123,31 @@ public enum LinuxGuestTools {
           fi
         else
           echo 'No Mac folder is selected. Choose folders in this VM settings, then shut down/start the VM.'
+        fi
+        if [ '\#(rosetta ? "1" : "0")' = 1 ]; then
+          # Rosetta runs x86_64 Linux binaries. fstab and binfmt.d keep it across reboots.
+          mkdir -p \#(rosettaMountPoint)
+          if ! awk '$2 == "\#(rosettaMountPoint)" {found=1} END {exit !found}' /etc/fstab; then
+            printf '\n\#(rosettaTag) \#(rosettaMountPoint) virtiofs ro,nofail 0 0\n' >> /etc/fstab || failed=1
+          fi
+          mountpoint -q \#(rosettaMountPoint) || mount -t virtiofs \#(rosettaTag) \#(rosettaMountPoint) || failed=1
+          if [ -x \#(rosettaMountPoint)/rosetta ]; then
+            mountpoint -q /proc/sys/fs/binfmt_misc || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || failed=1
+            if [ -d /etc/binfmt.d ] || [ -d /run/systemd/system ]; then
+              mkdir -p /etc/binfmt.d && printf '%s\n' '\#(rosettaBinfmt)' > /etc/binfmt.d/rosetta.conf || failed=1
+            fi
+            if [ -e /proc/sys/fs/binfmt_misc/rosetta ]; then
+              echo 'Rosetta is already registered for x86_64 binaries.'
+            elif printf '%s' '\#(rosettaBinfmt)' > /proc/sys/fs/binfmt_misc/register; then
+              echo 'Rosetta registered: x86_64 Linux binaries now run through Rosetta.'
+            else
+              echo 'Could not register Rosetta with binfmt_misc.' >&2
+              failed=1
+            fi
+          else
+            echo 'Rosetta share is missing. Enable Rosetta in Lumen and fully shut down/start this VM.' >&2
+            failed=1
+          fi
         fi
         echo "System setup result: $failed. Log: /var/log/lumen-guest-tools.log"
         exit "$failed"

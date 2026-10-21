@@ -2,11 +2,13 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import LumenCore
+import Virtualization
 
 struct NewMachineSheet: View {
     @EnvironmentObject private var model: LibraryModel
     @Environment(\.dismiss) private var dismiss
     @StateObject private var filePanels = FilePanelCoordinator()
+    @StateObject private var restoreImageDownloader = RestoreImageDownloader()
 
     @State private var selectedGuest: GuestOS = .ubuntu
     @State private var selectedDistro: LinuxDistribution?
@@ -38,6 +40,9 @@ struct NewMachineSheet: View {
     @State private var windowsDriversURL: URL?
     @State private var windowsCompatibilityDisplay = false
     @State private var portForwards: [PortForward] = []
+    @State private var linuxRosetta = false
+    @State private var nestedVirtualization = false
+    @State private var rosettaAvailability = VZLinuxRosettaDirectoryShare.availability
 
     @State private var activeTab = 0
     @State private var errorMessage: String?
@@ -94,6 +99,8 @@ struct NewMachineSheet: View {
         _windowsDriversURL = State(initialValue: machine?.windowsDriversPath.map { URL(fileURLWithPath: $0) })
         _windowsCompatibilityDisplay = State(initialValue: machine?.windowsCompatibilityDisplay ?? false)
         _portForwards = State(initialValue: machine?.portForwards ?? [])
+        _linuxRosetta = State(initialValue: machine?.linuxRosetta ?? false)
+        _nestedVirtualization = State(initialValue: machine?.nestedVirtualization ?? false)
     }
 
     private var host: HostResources { model.hostResources }
@@ -149,6 +156,7 @@ struct NewMachineSheet: View {
                isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK") { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
+        .onDisappear { restoreImageDownloader.cancel() }
         .onAppear {
             if let initialInstaller { useInstaller(initialInstaller) }
             else if let url = installerURL {
@@ -528,6 +536,23 @@ struct NewMachineSheet: View {
             }
             Text("Uses Apple’s native Virtualization framework. Choose a compatible Apple Silicon IPSW restore image. Installation will start automatically on first boot.")
                 .font(.system(size: 11)).foregroundStyle(LumenStyle.secondary).lineSpacing(3)
+            if restoreImageDownloader.isDownloading {
+                HStack(spacing: 10) {
+                    ProgressView(value: restoreImageDownloader.progress).tint(LumenStyle.mint)
+                    Text("\(Int(restoreImageDownloader.progress * 100))%")
+                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(LumenStyle.secondary)
+                    Button("Cancel") { restoreImageDownloader.cancel() }.buttonStyle(.borderless).font(.system(size: 11))
+                }
+                if let status = restoreImageDownloader.status {
+                    Text(status).font(.system(size: 10)).foregroundStyle(LumenStyle.secondary).lineLimit(1).truncationMode(.middle)
+                }
+            } else {
+                Button(action: downloadLatestMacOS) {
+                    Label("Download latest macOS", systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(CapsuleButtonStyle())
+                .help("Downloads the newest restore image this Mac supports from Apple (about 15 GB) to Application Support/Lumen/RestoreImages.")
+            }
         }
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.025)))
@@ -826,6 +851,10 @@ struct NewMachineSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.025)))
 
+            if selectedGuest.isLinux {
+                appleVirtualizationSection
+            }
+
             // Windows-specific options
             if selectedGuest == .windows {
                 VStack(alignment: .leading, spacing: 10) {
@@ -875,6 +904,59 @@ struct NewMachineSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.025)))
             }
+        }
+    }
+
+    private var nestedVirtualizationSupported: Bool {
+        if #available(macOS 15.0, *) { return VZGenericPlatformConfiguration.isNestedVirtualizationSupported }
+        return false
+    }
+
+    @ViewBuilder
+    private var appleVirtualizationSection: some View {
+        if rosettaAvailability != .notSupported || nestedVirtualizationSupported {
+            VStack(alignment: .leading, spacing: 10) {
+                TinyLabel(text: "APPLE VIRTUALIZATION")
+                if rosettaAvailability != .notSupported {
+                    HStack {
+                        Toggle("Rosetta for x86_64 Linux apps", isOn: $linuxRosetta)
+                            .toggleStyle(.checkbox).font(.system(size: 11))
+                        Spacer()
+                        if rosettaAvailability == .notInstalled {
+                            Button("Install Rosetta…", action: installRosetta).buttonStyle(.borderless).font(.system(size: 11))
+                        }
+                    }
+                    Text(rosettaAvailability == .notInstalled ?
+                         "Rosetta is not installed on this Mac yet. Lumen asks to install it when the VM starts." :
+                         "Shares Rosetta with the guest. Run Install / Repair Guest Tools afterwards to register it for x86_64 binaries. Restart the VM after changing this setting.")
+                        .font(.system(size: 10)).foregroundStyle(LumenStyle.secondary)
+                }
+                if nestedVirtualizationSupported {
+                    Toggle("Nested virtualization (KVM inside the guest)", isOn: $nestedVirtualization)
+                        .toggleStyle(.checkbox).font(.system(size: 11))
+                    Text("Lets the guest run its own virtual machines and containers that need KVM. Adds some overhead.")
+                        .font(.system(size: 10)).foregroundStyle(LumenStyle.secondary)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.025)))
+        }
+    }
+
+    private func installRosetta() {
+        Task {
+            do { try await VZLinuxRosettaDirectoryShare.installRosetta() }
+            catch { errorMessage = "Rosetta was not installed: \(error.localizedDescription)" }
+            rosettaAvailability = VZLinuxRosettaDirectoryShare.availability
+        }
+    }
+
+    private func downloadLatestMacOS() {
+        Task {
+            do { useInstaller(try await restoreImageDownloader.downloadLatest()) }
+            catch let error as URLError where error.code == .cancelled {}
+            catch { errorMessage = "Could not download macOS: \(error.localizedDescription)" }
         }
     }
 
@@ -1076,6 +1158,8 @@ struct NewMachineSheet: View {
                 machine.windowsDriversPath = windowsDriversURL?.path
                 machine.windowsCompatibilityDisplay = windowsCompatibilityDisplay
                 machine.portForwards = portForwards
+                machine.linuxRosetta = linuxRosetta
+                machine.nestedVirtualization = nestedVirtualization
                 if distributionEdited, machine.guest.isLinux, let distro = selectedDistro {
                     machine.guest = distro.family
                     machine.distribution = distro.id
@@ -1107,7 +1191,9 @@ struct NewMachineSheet: View {
                     portForwards: selectedGuest == .windows ? portForwards : [],
                     windowsCompatibilityDisplay: windowsCompatibilityDisplay,
                     additionalSharedFolders: Array(sharedFolders.dropFirst()),
-                    windowsLocalAccount: windowsLocalAccount
+                    windowsLocalAccount: windowsLocalAccount,
+                    linuxRosetta: selectedGuest.isLinux && linuxRosetta,
+                    nestedVirtualization: selectedGuest.isLinux && nestedVirtualization
                 )
                 try await model.create(record)
                 if startAfterCreation { DispatchQueue.main.async { model.start(record) } }
