@@ -33,11 +33,20 @@ final class GuestIntegrationTests: XCTestCase {
         let file = testRoot.appendingPathComponent("LumenLinuxTools-" + UUID().uuidString + ".sh")
         defer { try? FileManager.default.removeItem(at: file) }
         for sharing in [false, true] {
-            for (name, script) in LinuxGuestTools.files(sharedFolders: sharing) {
-                try Data(script.utf8).write(to: file)
-                XCTAssertEqual(try shell(["-n", file.path]), 0, name)
+            for rosetta in [false, true] {
+                for (name, script) in LinuxGuestTools.files(sharedFolders: sharing, rosetta: rosetta) {
+                    try Data(script.utf8).write(to: file)
+                    XCTAssertEqual(try shell(["-n", file.path]), 0, name)
+                }
             }
         }
+        let installer = LinuxGuestTools.installer(sharedFolders: false, rosetta: true)
+        XCTAssertTrue(installer.contains("[ '1' = 1 ]"))
+        XCTAssertTrue(installer.contains("systemctl enable --now fstrim.timer"))
+        XCTAssertTrue(installer.contains(LinuxGuestTools.rosettaBinfmt))
+        // binfmt_misc fields are colon-separated; the magic and mask must not contain one.
+        XCTAssertEqual(LinuxGuestTools.rosettaBinfmt.split(separator: ":", omittingEmptySubsequences: false).count, 8)
+        XCTAssertTrue(LinuxGuestTools.rosettaBinfmt.contains(":\(LinuxGuestTools.rosettaMountPoint)/rosetta:"))
         XCTAssertEqual(try shell(["-n", "-c", LinuxGuestTools.installCommand]), 0)
 
     }

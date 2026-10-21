@@ -131,6 +131,11 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
     public var windowsCompatibilityDisplay: Bool
     public var windowsAutomaticDisplaySetup: Bool
     public var portForwards: [PortForward]
+    // Apple Virtualization (Linux guests)
+    /// Shares Rosetta with the guest so it can run x86_64 Linux binaries.
+    public var linuxRosetta: Bool
+    /// Exposes virtualization extensions to the guest (macOS 15+, M3 or later).
+    public var nestedVirtualization: Bool
 
     public init(id: UUID = UUID(), name: String, guest: GuestOS, distribution: String? = nil,
                 cpuCount: Int = 4, memoryGiB: Int = 4, diskGiB: Int = 64, installerPath: String? = nil,
@@ -141,7 +146,8 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
                 networkEnabled: Bool = true, captureSystemKeys: Bool = true,
                 diskSyncMode: DiskSyncMode = .balanced, autoEjectInstaller: Bool = true,
                 windowsTPM: Bool = true, windowsBypassChecks: Bool = true, windowsDriversPath: String? = nil,
-                portForwards: [PortForward] = [], windowsCompatibilityDisplay: Bool? = nil, additionalSharedFolders: [SharedFolder] = [], windowsLocalAccount: Bool = true, windowsAutomaticDisplaySetup: Bool = true) {
+                portForwards: [PortForward] = [], windowsCompatibilityDisplay: Bool? = nil, additionalSharedFolders: [SharedFolder] = [], windowsLocalAccount: Bool = true, windowsAutomaticDisplaySetup: Bool = true,
+                linuxRosetta: Bool = false, nestedVirtualization: Bool = false) {
         self.id = id
         self.name = name
         self.guest = guest
@@ -173,6 +179,8 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
         self.windowsCompatibilityDisplay = windowsCompatibilityDisplay ?? false
         self.windowsAutomaticDisplaySetup = guest == .windows && windowsAutomaticDisplaySetup
         self.portForwards = portForwards
+        self.linuxRosetta = linuxRosetta
+        self.nestedVirtualization = nestedVirtualization
     }
 
     /// Machines created by earlier versions only store a subset of these keys.
@@ -212,6 +220,8 @@ public struct VirtualMachineRecord: Identifiable, Codable, Equatable {
         windowsCompatibilityDisplay = try c.decodeIfPresent(Bool.self, forKey: .windowsCompatibilityDisplay) ?? (guest == .windows)
         windowsAutomaticDisplaySetup = try c.decodeIfPresent(Bool.self, forKey: .windowsAutomaticDisplaySetup) ?? false
         portForwards = try c.decodeIfPresent([PortForward].self, forKey: .portForwards) ?? []
+        linuxRosetta = try c.decodeIfPresent(Bool.self, forKey: .linuxRosetta) ?? false
+        nestedVirtualization = try c.decodeIfPresent(Bool.self, forKey: .nestedVirtualization) ?? false
     }
 
     public static func defaultMACAddress(for id: UUID) -> String {
