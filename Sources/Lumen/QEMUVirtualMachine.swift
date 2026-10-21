@@ -3,6 +3,7 @@ import Combine
 import Darwin
 import Foundation
 import LumenCore
+import Security
 import UniformTypeIdentifiers
 
 /// Optional Windows ARM64 backend. QEMU owns the guest display in a separate Cocoa window.
@@ -19,6 +20,8 @@ final class QEMUVirtualMachine: ObservableObject {
 
     private var displayReceiptDirectory: URL?
     private var displaySetup: WindowsDisplaySetup?
+    /// Identifies the helper disc Lumen built most recently, for fixed Run commands.
+    private var setupDiscMarker = WindowsGuestCommands.makeDiscMarker()
     private var displaySetupTask: Task<Void, Never>?
     private var needsAutomaticDisplaySetup: Bool { record.windowsAutomaticDisplaySetup && !record.windowsCompatibilityDisplay }
     private var usesCompatibilityDisplay: Bool { record.windowsCompatibilityDisplay || needsAutomaticDisplaySetup }
@@ -309,7 +312,7 @@ final class QEMUVirtualMachine: ObservableObject {
     }
 
     /// All removable drives have explicit qdev identities. Modern QEMU's legacy device field is blank.
-    private func changeMedia(role: String, url: URL?) async throws {
+    private func changeMedia(role: String, url: URL?, reload: Bool = false) async throws {
         guard state == .running || state == .paused else { throw QEMUError("Start the machine before changing its discs.") }
         let blocks = try await mediaBlocks()
         guard let item = block(for: role, in: blocks), let id = item["qdev"] as? String else {
@@ -317,7 +320,7 @@ final class QEMUVirtualMachine: ObservableObject {
         }
         if let url {
             guard FileManager.default.isReadableFile(atPath: url.path) else { throw QEMUError("The selected disc cannot be read.") }
-            if let inserted = item["inserted"] as? [String: Any], inserted["file"] as? String == url.path,
+            if !reload, let inserted = item["inserted"] as? [String: Any], inserted["file"] as? String == url.path,
                item["tray_open"] as? Bool != true { return }
             _ = try await request("blockdev-change-medium", arguments: [
                 "id": id, "filename": url.path, "format": "raw", "read-only-mode": "read-only"
@@ -345,8 +348,8 @@ final class QEMUVirtualMachine: ObservableObject {
                       action: "Install Tools") else { return }
         guard let drivers = driversURL else { throw QEMUError("Choose an ARM64 driver ISO in this VM’s settings first.") }
         try await changeMedia(role: "drivers", url: drivers)
-        try await changeMedia(role: "setup", url: location.windowsSetupMedia)
-        try await openWindowsCommand(WindowsGuestCommands.installDrivers)
+        try await insertFreshSetupMedia()
+        try await openWindowsCommand(WindowsGuestCommands.installDrivers(marker: setupDiscMarker))
     }
 
     private func openWindowsCommand(_ text: String) async throws {
@@ -388,8 +391,16 @@ final class QEMUVirtualMachine: ObservableObject {
 
     func connectSharedFolders() async throws {
         guard managedSharing != nil, !record.sharedFolders.isEmpty else { throw QEMUError("Select folders in this VM’s settings, then restart the VM to share them.") }
-        try await changeMedia(role: "setup", url: location.windowsSetupMedia)
-        try await openWindowsCommand(WindowsGuestCommands.connectFolders)
+        try await insertFreshSetupMedia()
+        try await openWindowsCommand(WindowsGuestCommands.connectFolders(marker: setupDiscMarker))
+    }
+
+    /// A guest user who read this launch's disc could copy its marker onto their own
+    /// LUMENSETUP ISO, so rebuild the disc with a new marker right before typing a command.
+    private func insertFreshSetupMedia() async throws {
+        setupDiscMarker = WindowsGuestCommands.makeDiscMarker()
+        let media = try await prepareSetupMedia()
+        try await changeMedia(role: "setup", url: media, reload: true)
     }
 
     private func handleMenuAction(_ action: String) async throws {
@@ -672,13 +683,14 @@ final class QEMUVirtualMachine: ObservableObject {
     private func prepareSetupMedia() async throws -> URL {
         let sharingConnection = managedSharing?.connection
         let displaySetup = self.displaySetup
+        let discMarker = setupDiscMarker
         let clipboardResources = Bundle.main.resourceURL?.appendingPathComponent("WindowsClipboard")
-        return try await Task.detached { [record, location, sharingConnection, clipboardResources, displaySetup] in
+        return try await Task.detached { [record, location, sharingConnection, clipboardResources, displaySetup, discMarker] in
         let isoURL = location.windowsSetupMedia
         let staging = location.directory.appendingPathComponent(".setup-staging-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: staging) }
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        let files = WindowsSetupMedia.files(bypassChecks: record.windowsBypassChecks, sharedFolderName: nil, managedSharing: sharingConnection, preferLocalAccount: record.windowsLocalAccount, displaySetup: displaySetup)
+        let files = WindowsSetupMedia.files(bypassChecks: record.windowsBypassChecks, sharedFolderName: nil, managedSharing: sharingConnection, preferLocalAccount: record.windowsLocalAccount, displaySetup: displaySetup, discMarker: discMarker)
         for file in files {
             let dest = staging.appendingPathComponent(file.relativePath)
             try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -995,10 +1007,13 @@ final class QEMUVirtualMachine: ObservableObject {
         }
     }
 
+    /// QEMU loads this library through DYLD_INSERT_LIBRARIES, so release builds accept only
+    /// the copy sealed into Lumen's own signature. Development fallbacks exist in DEBUG only.
     private func helperDylibURL() -> URL? {
-        if let bundled = Bundle.main.url(forResource: "LumenQEMUHelper", withExtension: "dylib") {
+        if let bundled = Self.sealedHelperDylib {
             return bundled
         }
+        #if DEBUG
         let local = URL(fileURLWithPath: "Resources/LumenQEMUHelper.dylib")
         if FileManager.default.isReadableFile(atPath: local.path) {
             return local
@@ -1022,8 +1037,31 @@ final class QEMUVirtualMachine: ObservableObject {
                 return target
             }
         }
+        #endif
         return nil
     }
+
+    private static let sealedHelperDylib: URL? = {
+        guard let helper = Bundle.main.url(forResource: "LumenQEMUHelper", withExtension: "dylib") else { return nil }
+        var app: SecStaticCode?
+        var library: SecStaticCode?
+        let strict = SecCSFlags(rawValue: kSecCSStrictValidate)
+        guard SecStaticCodeCreateWithPath(Bundle.main.bundleURL as CFURL, [], &app) == errSecSuccess, let app,
+              SecStaticCodeCreateWithPath(helper as CFURL, [], &library) == errSecSuccess, let library,
+              SecStaticCodeCheckValidity(library, strict, nil) == errSecSuccess,
+              // The app's sealed resources record the library's hash, including for ad-hoc builds.
+              SecStaticCodeCheckValidity(app, SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckNestedCode), nil) == errSecSuccess
+        else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(app, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let team = (info as? [String: Any])?[kSecCodeInfoTeamIdentifier as String] as? String else { return helper }
+        // A Developer ID build also requires the library to come from the same team.
+        var requirement: SecRequirement?
+        guard team.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil,
+              SecRequirementCreateWithString("anchor apple generic and certificate leaf[subject.OU] = \"\(team)\"" as CFString, [], &requirement) == errSecSuccess,
+              SecStaticCodeCheckValidity(library, strict, requirement) == errSecSuccess else { return nil }
+        return helper
+    }()
 
     private func prepareGuestIcon() throws -> URL {
         let iconURL = location.directory.appendingPathComponent("icon.png")

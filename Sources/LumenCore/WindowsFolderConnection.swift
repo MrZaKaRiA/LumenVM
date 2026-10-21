@@ -9,19 +9,67 @@ public struct WindowsFolderConnection: Codable, Equatable {
         self.shares = shares
     }
 
-    public var script: String {
-        let payload = ((try? JSONEncoder().encode(self)) ?? Data()).base64EncodedString()
-        return #"""
+    /// Data read by the fixed connection script from the current host-generated disc.
+    public var configuration: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(self) else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Fixed code: the protected copy in %ProgramData%\Lumen\Tools never embeds the password.
+    /// It validates the disc's data document, saves the credential in the signed-in user's
+    /// Credential Manager, and reuses it when the helper disc is not attached.
+    public static let script = #"""
+        param([switch]$Open)
         $ErrorActionPreference = 'Stop'
-        $config = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('\#(payload)')) | ConvertFrom-Json
         $shortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Lumen Mac Folders.lnk'
-        if ($config.shares.Count -eq 0) { Remove-Item -LiteralPath $shortcut -Force -ErrorAction SilentlyContinue; exit 0 }
+        $cache = Join-Path $env:LOCALAPPDATA 'Lumen\shares.json'
+        $config = $null
+        foreach ($volume in @(Get-Volume -FileSystemLabel LUMENSETUP -ErrorAction SilentlyContinue)) {
+            if (-not $volume.DriveLetter) { continue }
+            $path = '{0}:\lumen\connect-folders.json' -f $volume.DriveLetter
+            if (Test-Path -LiteralPath $path) {
+                if ((Get-Item -LiteralPath $path).Length -gt 65536) { throw 'Invalid shared folder configuration.' }
+                $config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+                break
+            }
+        }
+        $password = $null
+        if ($null -ne $config) {
+            $shares = @($config.shares)
+            if ($shares.Count -gt 0 -and $config.password -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid shared folder configuration.' }
+            $password = $config.password
+        } elseif (Test-Path -LiteralPath $cache) {
+            $shares = @(Get-Content -LiteralPath $cache -Raw | ConvertFrom-Json)
+        } else {
+            exit 0
+        }
+        if ($shares.Count -gt 64) { throw 'Invalid shared folder configuration.' }
+        foreach ($share in $shares) {
+            if ($share -isnot [string] -or $share -notmatch '^[^"\\/:*?<>|\p{Cc}\p{Cf}]{1,64}$') { throw 'Invalid shared folder configuration.' }
+        }
+        if ($shares.Count -eq 0) {
+            Remove-Item -LiteralPath $shortcut, $cache -Force -ErrorAction SilentlyContinue
+            if ($null -ne $config) { & "$env:SystemRoot\System32\cmdkey.exe" '/delete:10.0.2.4' *> $null }
+            exit 0
+        }
+        if ($password) {
+            # Per-user and DPAPI protected; other Windows accounts cannot read it.
+            & "$env:SystemRoot\System32\cmdkey.exe" '/add:10.0.2.4' '/user:Lumen' "/pass:$password" *> $null
+            New-Item -ItemType Directory -Path (Split-Path $cache) -Force | Out-Null
+            ConvertTo-Json -InputObject @($shares) -Compress | Set-Content -LiteralPath $cache -Encoding UTF8
+        }
         $connected = $false
         for ($attempt = 0; $attempt -lt 90; $attempt++) {
             $connected = $true
-            foreach ($share in $config.shares) {
+            foreach ($share in $shares) {
                 $unc = '\\10.0.2.4\' + $share
-                & "$env:SystemRoot\System32\net.exe" use $unc $config.password '/user:Lumen' '/persistent:no' *> $null
+                if ($password) {
+                    & "$env:SystemRoot\System32\net.exe" use $unc $password '/user:Lumen' '/persistent:no' *> $null
+                } else {
+                    & "$env:SystemRoot\System32\net.exe" use $unc '/persistent:no' *> $null
+                }
                 if ($LASTEXITCODE -ne 0) { $connected = $false }
             }
             if ($connected) { break }
@@ -33,15 +81,16 @@ public struct WindowsFolderConnection: Codable, Equatable {
         $link.TargetPath = '\\10.0.2.4\'
         $link.Description = 'Folders selected in Lumen on your Mac'
         $link.Save()
+        if ($Open) { Start-Process explorer.exe '\\10.0.2.4\' }
         """#
-    }
 
     /// Startup runs in each logged-in user's ordinary session, where Explorer's
     /// network connections belong. Setup/driver installation only creates the shortcut.
+    /// It runs only the administrator-protected copy, never code from a CD volume,
+    /// since any Windows user can mount an ISO with the same label.
     public static var installScript: String {
         let launch = #"""
-        $script = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=5' | Where-Object { $_.VolumeName -eq 'LUMENSETUP' } | ForEach-Object { Join-Path $_.DeviceID 'lumen\connect-folders.ps1' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-        if (!$script) { $script = Join-Path $env:ProgramData 'Lumen\Tools\connect-folders.ps1' }
+        $script = Join-Path $env:ProgramData 'Lumen\Tools\connect-folders.ps1'
         if (Test-Path -LiteralPath $script) { & $script }
         """#
         let encodedLaunch = launch.data(using: .utf16LittleEndian)!.base64EncodedString()

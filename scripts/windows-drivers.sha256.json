@@ -1,0 +1,141 @@
+{
+  "source": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302.iso",
+  "files": {
+    "Balloon/w11/ARM64/balloon.cat": {
+      "sha256": "a8811eb54b3da662bc1f375e407565952a02d8543bafdba00bee6b1b081c23fa",
+      "size": 12081
+    },
+    "Balloon/w11/ARM64/balloon.inf": {
+      "sha256": "15b6e283918139bc1f4134ee79df8a0753bc218f308e5d6689a767bd712c890e",
+      "size": 2516
+    },
+    "Balloon/w11/ARM64/balloon.sys": {
+      "sha256": "37484a011c00268c9b20b4c8886dd02642ae15e12f3c8c5bf25395772e6b4dc3",
+      "size": 72856
+    },
+    "Balloon/w11/ARM64/blnsvr.exe": {
+      "sha256": "38bcb00ddf2444d50d6f07a10e18948be468674948c9a4ea0314ec1d32dc5ebe",
+      "size": 187544
+    },
+    "NetKVM/w11/ARM64/Readme.md": {
+      "sha256": "b2eae8d3d3b488f14e481cc09e9297c841930fde9d6d0f7b3c5520ec49ada7ed",
+      "size": 6283
+    },
+    "NetKVM/w11/ARM64/netkvm.cat": {
+      "sha256": "c5fa8b6790e9c0dac8fd8848c617292230ecaba29a03cf1ad25bdf243970a722",
+      "size": 12496
+    },
+    "NetKVM/w11/ARM64/netkvm.inf": {
+      "sha256": "4b56c2e399c5b1943a1e8bae5b4907ca06ebc76053df5cfdc628bcf68fa371fd",
+      "size": 18828
+    },
+    "NetKVM/w11/ARM64/netkvm.sys": {
+      "sha256": "118e6c7cad6f09b406f2b58dc9592ccbe1e803e751e5577b66ac180dbeacaabb",
+      "size": 200344
+    },
+    "NetKVM/w11/ARM64/netkvmco.exe": {
+      "sha256": "ba1be928cbb05e57299c99f9d15be7c09fb754d2f096a74b806aa8a7bffa8fa8",
+      "size": 1261152
+    },
+    "NetKVM/w11/ARM64/netkvmp.exe": {
+      "sha256": "6abd66a785e0edd00ce91c09b207d3e67f5567d32cadd44c7d3363a9b1381a37",
+      "size": 266904
+    },
+    "viogpudo/w11/ARM64/vgpusrv.exe": {
+      "sha256": "f85b5cc9b92d76b7f66060217b7bbafe7a3a72fc01e892e175baa6fa867cce3e",
+      "size": 195224
+    },
+    "viogpudo/w11/ARM64/viogpuap.exe": {
+      "sha256": "6aa7e950721299d9303651030ff72ef8e10adbfc5077bcc333b8416fb3ef7f35",
+      "size": 194200
+    },
+    "viogpudo/w11/ARM64/viogpudo.cat": {
+      "sha256": "15a9b4664470602ab20efe1d665dc98d5fe0337e32038bc51369ecc0ca4826d2",
+      "size": 11882
+    },
+    "viogpudo/w11/ARM64/viogpudo.inf": {
+      "sha256": "849cfefa9364b4a3e80dd44ce898e3b4766af5c4a475ea0a95ddb4c9f1cb2e4b",
+      "size": 2889
+    },
+    "viogpudo/w11/ARM64/viogpudo.sys": {
+      "sha256": "78bf0afc614a19c365a050e96e0d0274def2ac860e842cc0964795bf431a14b7",
+      "size": 118936
+    },
+    "viogpudo/w11/ARM64/viogpures.exe": {
+      "sha256": "f5ed8835069cb0ebce2c3a07d919019040671f8ff08fd4248574cb924c5cf6a8",
+      "size": 184416
+    },
+    "vioinput/w11/ARM64/viohidkmdf.sys": {
+      "sha256": "f2f7e290113d4878766086dbe3e5706609dfbde99053ff6e1b26aff2474e6bb5",
+      "size": 17048
+    },
+    "vioinput/w11/ARM64/vioinput.cat": {
+      "sha256": "61a44ccf7226c455f3ec03245056b18cf984469ecc81f229b81fddae3673f221",
+      "size": 12392
+    },
+    "vioinput/w11/ARM64/vioinput.inf": {
+      "sha256": "217795fd9d9f9e9b57b95a5bd79b7c1b830cd6ef29c3a762aaf97485e5df45bb",
+      "size": 3242
+    },
+    "vioinput/w11/ARM64/vioinput.sys": {
+      "sha256": "6f3d28cf569f18c8ce1136066c88cfc573be0e7397cd15114be8678510666e16",
+      "size": 95896
+    },
+    "viorng/w11/ARM64/viorng.cat": {
+      "sha256": "d80c618846146a1a7f751d11a28699029469acb5b2b95b27e59f4f6afabeda36",
+      "size": 12503
+    },
+    "viorng/w11/ARM64/viorng.inf": {
+      "sha256": "ee91103810fae42390fb51ca9e31f20a30cf31e15b0334ea36c93c905317b3aa",
+      "size": 3721
+    },
+    "viorng/w11/ARM64/viorng.sys": {
+      "sha256": "9b810633afa6494d0ea413f8e8bcfd10a4f688c90213ce75be2988783267505f",
+      "size": 62616
+    },
+    "viorng/w11/ARM64/viorngum.dll": {
+      "sha256": "069b63b2d496c46126669314dd5178b81f2661e1bf3abbc2a6378e8a4cc9207e",
+      "size": 115352
+    },
+    "vioscsi/w11/ARM64/vioscsi.cat": {
+      "sha256": "8051fd81961af6160b440d2543d30e17c5d9d63507b220e5e735ba5b67a12a61",
+      "size": 12082
+    },
+    "vioscsi/w11/ARM64/vioscsi.inf": {
+      "sha256": "945c15ddf303c9f354160a4e89aeaca0ffde63f67a5c2420d4448706617136e8",
+      "size": 3203
+    },
+    "vioscsi/w11/ARM64/vioscsi.sys": {
+      "sha256": "dd9e4626d904f58494ca9569f674f12cdfb080fc7a8269111e8bb34b7913d970",
+      "size": 87704
+    },
+    "vioserial/w11/ARM64/vioser.cat": {
+      "sha256": "51df407a0f6906f4bf40fbf507e4c30fefdc5c37f1811ff7e4c5e43bdb515357",
+      "size": 12074
+    },
+    "vioserial/w11/ARM64/vioser.inf": {
+      "sha256": "77403d33b3aec78dc3f9306c9efab1ef60329b532abcf94163c660a615763db2",
+      "size": 2623
+    },
+    "vioserial/w11/ARM64/vioser.sys": {
+      "sha256": "7c651d1da18485d00f62669d546d52c02ea03b8fe299de96c5992915d6d126d0",
+      "size": 97944
+    },
+    "viostor/w11/ARM64/viostor.cat": {
+      "sha256": "9264ff0e8069c82041e018420f198d257f760d70d55ac2be95b3bd49091468d9",
+      "size": 12082
+    },
+    "viostor/w11/ARM64/viostor.inf": {
+      "sha256": "a9005e9b3affdb161df22e1f9c6db0433c6f48b765fe8ba71e7915adb86238bb",
+      "size": 2997
+    },
+    "viostor/w11/ARM64/viostor.sys": {
+      "sha256": "a1cabcb4fdea38edc47e3b7f9414bd3cfe248f4c2ad2c38844201cf10b4cfec8",
+      "size": 75416
+    },
+    "virtio-win_license.txt": {
+      "sha256": "accd84cb35eff899d619ff40e6fea8074305cdf0e7191db71a5d9c3a015e3b02",
+      "size": 1598
+    }
+  }
+}
