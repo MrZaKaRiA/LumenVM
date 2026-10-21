@@ -69,7 +69,9 @@ final class LibraryModel: ObservableObject {
             refreshUsage()
         } catch { errorMessage = error.localizedDescription }
         usageTimer = Timer.publish(every: 8, on: .main, in: .common).autoconnect().sink { [weak self] _ in
-            self?.refreshUsage()
+            // Disk allocation only grows while a guest runs; create/delete/stop refresh explicitly.
+            guard let self, self.machines.contains(where: { self.state(for: $0.id).isActive }) else { return }
+            self.refreshUsage()
         }
         setupSleepWakeObservers()
         if isGuestProcess {
@@ -101,9 +103,9 @@ final class LibraryModel: ObservableObject {
     func allocatedBytes(for id: UUID) -> Int64 { usage[id] ?? 0 }
     func progress(for id: UUID) -> Double { nativeProcesses[id]?.progress ?? appleEngines[id]?.progress ?? 0 }
 
-    func create(_ record: VirtualMachineRecord) throws {
+    func create(_ record: VirtualMachineRecord) async throws {
         try record.validate()
-        try validateMedia(record)
+        try await validateMedia(record)
         guard let library else { throw LibraryError.invalidConfiguration("The library is unavailable. Check its folder permissions.") }
         let policy = resourcePolicy
         guard record.cpuCount <= policy.maxCPUsPerMachine(on: hostResources),
@@ -130,17 +132,17 @@ final class LibraryModel: ObservableObject {
     }
 
     func create(name: String, guest: GuestOS, cpuCount: Int, memoryGiB: Int, diskGiB: Int,
-                installerURL: URL?, sharedDirectoryURL: URL?) throws {
+                installerURL: URL?, sharedDirectoryURL: URL?) async throws {
         let record = VirtualMachineRecord(name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                                           guest: guest, cpuCount: cpuCount, memoryGiB: memoryGiB,
                                           diskGiB: diskGiB, installerPath: installerURL?.path,
                                           sharedDirectoryPath: sharedDirectoryURL?.path)
-        try create(record)
+        try await create(record)
     }
 
-    func update(record: VirtualMachineRecord) throws {
+    func update(record: VirtualMachineRecord) async throws {
         try record.validate()
-        try validateMedia(record)
+        try await validateMedia(record)
         guard !state(for: record.id).isActive else {
             throw LibraryError.invalidConfiguration("Shut down the machine before changing its settings.")
         }
@@ -180,12 +182,13 @@ final class LibraryModel: ObservableObject {
         machines[index] = updated
     }
 
-    private func validateMedia(_ record: VirtualMachineRecord) throws {
+    private func validateMedia(_ record: VirtualMachineRecord) async throws {
         if let path = record.windowsDriversPath, !FileManager.default.isReadableFile(atPath: path) {
             throw LibraryError.invalidConfiguration("The Windows driver disc cannot be read. Choose another ISO.")
         }
         if let path = record.installerPath, !record.guest.isMacOS {
-            let detected = InstallerDetector.detect(url: URL(fileURLWithPath: path))
+            // Reading ISO sectors can block on slow or network volumes; keep it off the main thread.
+            let detected = await Task.detached(priority: .userInitiated) { InstallerDetector.detect(url: URL(fileURLWithPath: path)) }.value
             guard detected.architecture != .x86_64 else {
                 throw LibraryError.invalidConfiguration("This installer contains an Intel bootloader. Choose ARM64 / AArch64 media.")
             }
@@ -470,7 +473,7 @@ final class LibraryModel: ObservableObject {
                 updated.windowsAutomaticDisplaySetup = false
                 pending.remove(record.id)
                 ownsPending = false
-                try update(record: updated)
+                try await update(record: updated)
                 start(updated)
             } catch { errorMessage = error.localizedDescription }
         }
@@ -616,7 +619,9 @@ final class LibraryModel: ObservableObject {
 
     private func refreshUsage() {
         guard let library else { return }
-        usage = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, (try? SparseDisk.usage(at: library.location(for: $0.id).disk).allocatedBytes) ?? 0) })
+        let latest = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, (try? SparseDisk.usage(at: library.location(for: $0.id).disk).allocatedBytes) ?? 0) })
+        guard latest != usage else { return }
+        usage = latest
         objectWillChange.send()
     }
 

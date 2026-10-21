@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Darwin
 import Foundation
 import LumenCore
@@ -700,6 +701,14 @@ final class QEMUVirtualMachine: ObservableObject {
             let destination = staging.appendingPathComponent("lumen/agent")
             try FileManager.default.copyItem(at: clipboardResources, to: destination)
         }
+        // Skip hdiutil when the staged contents match the disc built last time.
+        let hashURL = isoURL.appendingPathExtension("sha256")
+        let contentHash = try Self.contentHash(of: staging)
+        if FileManager.default.fileExists(atPath: isoURL.path),
+           (try? String(contentsOf: hashURL, encoding: .utf8)) == contentHash {
+            return isoURL
+        }
+        try? FileManager.default.removeItem(at: hashURL)
         let temporaryISO = location.directory.appendingPathComponent(".setup-\(UUID().uuidString).iso")
         defer { try? FileManager.default.removeItem(at: temporaryISO) }
         let proc = Process()
@@ -715,8 +724,27 @@ final class QEMUVirtualMachine: ObservableObject {
         } else {
             try FileManager.default.moveItem(at: temporaryISO, to: isoURL)
         }
+        try? contentHash.write(to: hashURL, atomically: true, encoding: .utf8)
         return isoURL
         }.value
+    }
+
+    /// SHA-256 over every regular file's relative path and bytes, in sorted path order.
+    nonisolated private static func contentHash(of directory: URL) throws -> String {
+        let root = directory.standardizedFileURL.path
+        var entries: [(String, URL)] = []
+        if let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) {
+            for case let url as URL in enumerator where (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                entries.append((String(url.standardizedFileURL.path.dropFirst(root.count)), url))
+            }
+        }
+        var hasher = SHA256()
+        for (relative, url) in entries.sorted(by: { $0.0 < $1.0 }) {
+            let data = try Data(contentsOf: url)
+            hasher.update(data: Data(relative.utf8) + Data([0]) + withUnsafeBytes(of: UInt64(data.count).littleEndian) { Data($0) })
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func makeArguments(firmware: (code: URL, variables: URL), setupMedia: URL, bootInstaller: Bool) throws -> [String] {
@@ -724,7 +752,9 @@ final class QEMUVirtualMachine: ObservableObject {
         var arguments = [
             "-name", record.name.replacingOccurrences(of: ",", with: ",,"),
             "-machine", "virt,highmem=on,gic-version=3,pflash0=uefi-code,pflash1=uefi-vars",
-            "-accel", "hvf", "-cpu", "host", "-smp", String(record.cpuCount),
+            "-accel", "hvf", "-cpu", "host",
+            // Present one socket of N single-threaded cores so Windows schedules them as a single package.
+            "-smp", "\(record.cpuCount),sockets=1,cores=\(record.cpuCount),threads=1",
             "-m", String(memMB),
             "-nodefaults", "-display", "cocoa,zoom-to-fit=on,left-command-key=\(record.captureSystemKeys ? "on" : "off")",
             "-device", usesCompatibilityDisplay ? "ramfb" : "virtio-gpu-pci,edid=on,xres=\(record.displayWidth),yres=\(record.displayHeight)",
@@ -773,6 +803,7 @@ final class QEMUVirtualMachine: ObservableObject {
             arguments += ["-blockdev", try json(block)]
         }
         // Windows has a native NVMe storage driver. Virtio storage would need an extra ARM64 driver.
+        // QEMU's nvme device has no iothread property (checked on 11.1), so it stays on the main loop.
         let nvmeBootIndex = bootInstaller ? 1 : 0
         arguments += ["-device", "nvme,drive=disk,serial=LUMEN\(record.id.uuidString.replacingOccurrences(of: "-", with: "").prefix(12)),bootindex=\(nvmeBootIndex)"]
         if let path = record.installerPath {

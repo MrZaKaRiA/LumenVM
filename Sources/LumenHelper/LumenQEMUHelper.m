@@ -355,7 +355,9 @@ static void lumenDrawRect(NSView *view, SEL selector, NSRect dirty) {
         ((void (*)(id, SEL, NSRect))originalDrawRect)(view, selector, dirty);
         return;
     }
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    // Created once; drawRect runs on every guest frame.
+    static CGColorSpaceRef colorSpace;
+    if (!colorSpace) colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, framebufferData(framebuffer),
                                                             (size_t)stride * height, NULL);
     CGImageRef image = CGImageCreate(width, height, 8, 32, stride, colorSpace,
@@ -369,7 +371,6 @@ static void lumenDrawRect(NSView *view, SEL selector, NSRect dirty) {
         ((void (*)(id, SEL, NSRect))originalDrawRect)(view, selector, dirty);
     }
     CGDataProviderRelease(provider);
-    CGColorSpaceRelease(colorSpace);
 }
 
 static IMP originalUpdateUIInfo;

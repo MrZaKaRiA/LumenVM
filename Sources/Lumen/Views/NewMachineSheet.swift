@@ -151,8 +151,11 @@ struct NewMachineSheet: View {
         } message: { Text(errorMessage ?? "") }
         .onAppear {
             if let initialInstaller { useInstaller(initialInstaller) }
-            else if let path = installerURL?.path {
-                detectedInstaller = InstallerDetector.detect(url: URL(fileURLWithPath: path))
+            else if let url = installerURL {
+                Task {
+                    let detected = await Task.detached(priority: .userInitiated) { InstallerDetector.detect(url: url) }.value
+                    if installerURL == url { detectedInstaller = detected }
+                }
             }
         }
 
@@ -970,9 +973,19 @@ struct NewMachineSheet: View {
     private func useInstaller(_ url: URL) {
         do {
             try LocalFileSelection.validateInstaller(url)
-            let previousName = selectedDistro?.name ?? selectedGuest.title
-            installerURL = url
-            let detected = InstallerDetector.detect(url: url)
+        } catch { errorMessage = error.localizedDescription; return }
+        let previousName = selectedDistro?.name ?? selectedGuest.title
+        installerURL = url
+        Task {
+            // Reading ISO sectors can block on slow or network volumes; keep it off the main thread.
+            let detected = await Task.detached(priority: .userInitiated) { InstallerDetector.detect(url: url) }.value
+            guard installerURL == url else { return }
+            applyDetectedInstaller(detected, previousName: previousName)
+        }
+    }
+
+    private func applyDetectedInstaller(_ detected: DetectedInstaller, previousName: String) {
+        do {
             detectedInstaller = detected
             if editingMachine == nil, let guest = detected.guest {
                 selectedGuest = guest
@@ -1036,6 +1049,10 @@ struct NewMachineSheet: View {
     private func saveMachine() {
         guard canCreate else { return }
         creating = true
+        Task { await performSave() }
+    }
+
+    private func performSave() async {
         do {
             if var machine = editingMachine {
                 machine.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1063,7 +1080,7 @@ struct NewMachineSheet: View {
                     machine.guest = distro.family
                     machine.distribution = distro.id
                 }
-                try model.update(record: machine)
+                try await model.update(record: machine)
             } else {
                 let record = VirtualMachineRecord(
                     name: name.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1092,7 +1109,7 @@ struct NewMachineSheet: View {
                     additionalSharedFolders: Array(sharedFolders.dropFirst()),
                     windowsLocalAccount: windowsLocalAccount
                 )
-                try model.create(record)
+                try await model.create(record)
                 if startAfterCreation { DispatchQueue.main.async { model.start(record) } }
             }
             dismiss()
