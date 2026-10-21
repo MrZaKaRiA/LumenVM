@@ -11,7 +11,7 @@ public enum WindowsSetupMedia {
         public let contents: String
     }
 
-    public static func files(bypassChecks: Bool, sharedFolderName: String?, managedSharing: WindowsFolderConnection? = nil, preferLocalAccount: Bool = true, displaySetup: WindowsDisplaySetup? = nil) -> [File] {
+    public static func files(bypassChecks: Bool, sharedFolderName: String?, managedSharing: WindowsFolderConnection? = nil, preferLocalAccount: Bool = true, displaySetup: WindowsDisplaySetup? = nil, discMarker: String? = nil) -> [File] {
         var files = [
             File(relativePath: "autounattend.xml", contents: autounattend(bypassChecks: bypassChecks, preferLocalAccount: preferLocalAccount)),
             File(relativePath: "startup.nsh", contents: startupScript),
@@ -21,13 +21,17 @@ public enum WindowsSetupMedia {
             File(relativePath: "lumen/display-setup.json", contents: displaySetup?.configuration ?? "{}"),
             File(relativePath: "lumen/install-graphics-service.cmd", contents: graphicsServiceScript),
             File(relativePath: "lumen/configure-display.cmd", contents: displayConfigurationScript),
-            File(relativePath: "lumen/connect-folders.ps1", contents: (managedSharing ?? WindowsFolderConnection(password: "", shares: [])).script),
+            File(relativePath: "lumen/connect-folders.ps1", contents: WindowsFolderConnection.script),
+            File(relativePath: "lumen/connect-folders.json", contents: (managedSharing ?? WindowsFolderConnection(password: "", shares: [])).configuration),
             File(relativePath: "lumen/install-sharing.cmd", contents: WindowsFolderConnection.installScript),
             File(relativePath: "lumen/install-clipboard.cmd", contents: WindowsClipboardAgent.installScript),
             File(relativePath: "lumen/Install Lumen Drivers.cmd", contents: "@echo off\r\npowershell -NoProfile -Command \"Start-Process -FilePath (Join-Path $env:ProgramData 'Lumen\\Tools\\finish-setup.cmd') -Verb RunAs\"\r\n"),
             File(relativePath: "lumen/Display settings.cmd", contents: "@echo off\r\nstart ms-settings:display\r\n"),
             File(relativePath: "README.txt", contents: readme)
         ]
+        if let discMarker, WindowsGuestCommands.isDiscMarker(discMarker) {
+            files.append(File(relativePath: "lumen/id-" + discMarker, contents: discMarker))
+        }
         if let share = sharedFolderName?.trimmingCharacters(in: .whitespacesAndNewlines), !share.isEmpty,
            share.rangeOfCharacter(from: CharacterSet(charactersIn: "\"\\/:*?<>|").union(.controlCharacters)) == nil {
             files.append(File(relativePath: "lumen/Connect Mac Shared Folder.cmd", contents: shareScript(shareName: share)))
@@ -55,6 +59,7 @@ public enum WindowsSetupMedia {
             #"reg add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v BypassNRO /t REG_DWORD /d 1 /f"#,
             #"cmd /c for %i in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %i:\lumen\install-drivers.cmd call %i:\lumen\install-drivers.cmd /setup"#,
             #"cmd /c for %i in (D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist %i:\lumen\install-drivers.cmd xcopy "%i:\lumen\*" "%ProgramData%\Lumen\Tools\" /E /I /Y"#,
+            #"cmd /c del /q "%ProgramData%\Lumen\Tools\*.json" "%ProgramData%\Lumen\Tools\id-*""#,
             #"cmd /c copy /y "%ProgramData%\Lumen\Tools\Install Lumen Drivers.cmd" "%PUBLIC%\Desktop\Install Lumen Drivers.cmd""#,
             #"cmd /c for %i in (D E F G H I J K L M N O P Q R) do @if exist "%i:\lumen\Connect Mac Shared Folder.cmd" copy /y "%i:\lumen\Connect Mac Shared Folder.cmd" "C:\Users\Public\Desktop\""#
         ]
@@ -146,11 +151,18 @@ public enum WindowsSetupMedia {
     set "FAILED=0"\r
     set "LOG=%TEMP%\\Lumen-drivers.log"\r
     echo Lumen ARM64 driver installation > "%LOG%"\r
+    rem Startup and elevated shortcuts run these tools, so only administrators and SYSTEM\r
+    rem may change them. Protect the folder before copying so new files inherit this.\r
+    if not exist "%ProgramData%\\Lumen\\Tools" mkdir "%ProgramData%\\Lumen\\Tools" >> "%LOG%" 2>&1\r
+    call :ProtectTools\r
+    if errorlevel 1 set "FAILED=1"\r
     rem Refresh the repair tools and desktop launcher for existing installations too.\r
     if /i not "%~dp0"=="%ProgramData%\\Lumen\\Tools\\" (\r
       xcopy "%~dp0*" "%ProgramData%\\Lumen\\Tools\\" /E /I /Y >> "%LOG%" 2>&1\r
       if errorlevel 1 set "FAILED=1"\r
     )\r
+    rem Disc data documents hold credentials and one-launch markers. Keep only code.\r
+    del /q "%ProgramData%\\Lumen\\Tools\\*.json" "%ProgramData%\\Lumen\\Tools\\id-*" >> "%LOG%" 2>&1\r
     copy /y "%ProgramData%\\Lumen\\Tools\\Install Lumen Drivers.cmd" "%PUBLIC%\\Desktop\\Install Lumen Drivers.cmd" >> "%LOG%" 2>&1\r
     if errorlevel 1 set "FAILED=1"\r
     call "%~dp0install-sharing.cmd" >> "%LOG%" 2>&1\r
@@ -206,6 +218,13 @@ public enum WindowsSetupMedia {
     if "%DRIVER_RESULT%"=="3010" exit /b 0\r
     if "%DRIVER_RESULT%"=="1641" exit /b 0\r
     exit /b 1\r
+    :ProtectTools\r
+    icacls "%ProgramData%\\Lumen" /setowner *S-1-5-32-544 /T /C /Q >> "%LOG%" 2>&1\r
+    if errorlevel 1 exit /b 1\r
+    icacls "%ProgramData%\\Lumen" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX /Q >> "%LOG%" 2>&1\r
+    if errorlevel 1 exit /b 1\r
+    icacls "%ProgramData%\\Lumen\\*" /reset /T /C /Q >> "%LOG%" 2>&1\r
+    exit /b %ERRORLEVEL%\r
 
     """
 
@@ -330,6 +349,7 @@ public enum WindowsSetupMedia {
     startup.nsh       - automatically launches the Windows 11 installer from UEFI.\r
     lumen\\install-drivers.cmd - stages ARM64 VirtIO display, network and device drivers.\r
     lumen\\connect-folders.ps1 - connects folders selected in Lumen over the private VM network.\r
+    lumen\\connect-folders.json - this launch's folder list and private VM sharing credential.\r
     lumen\\install-sharing.cmd - registers automatic connection in the signed-in user session.\r
 
     """

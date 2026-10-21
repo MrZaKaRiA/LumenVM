@@ -55,5 +55,7 @@ while IFS= read -r module; do
 done < <(find "$APP/Contents/Resources/WindowsSharing" -type f -name '*.so')
 mkdir -p "$APP/Contents/Resources/Documentation"
 cp docs/compatibility.md docs/feature-audit.md docs/windows-3d-integration.md "$APP/Contents/Resources/Documentation/"
-codesign --force --sign - --entitlements Resources/Lumen.entitlements "$APP"
+# Hardened runtime; Lumen itself uses only Virtualization.framework. QEMU is a separate,
+# separately entitled process, so this app needs no com.apple.security.hypervisor.
+codesign --force --sign - --options runtime --entitlements Resources/Lumen.entitlements "$APP"
 printf '\nBuilt %s\nOpen with: open "%s"\n' "$APP" "$APP"

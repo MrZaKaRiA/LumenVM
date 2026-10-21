@@ -54,7 +54,8 @@ final class DetectionAndPolicyTests: XCTestCase {
     }
 
     func testManagedSharingUsesPrivateGuestEndpointAndUserStartup() throws {
-        let connection = WindowsFolderConnection(password: String(repeating: "a", count: 64), shares: ["Desktop", "Files (2)"])
+        let password = String(repeating: "a", count: 64)
+        let connection = WindowsFolderConnection(password: password, shares: ["Desktop", "Files (2)"])
         let files = WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: nil, managedSharing: connection)
         let script = try XCTUnwrap(files.first { $0.relativePath == "lumen/connect-folders.ps1" }?.contents)
         XCTAssertTrue(script.contains("10.0.2.4"))
@@ -66,17 +67,79 @@ final class DetectionAndPolicyTests: XCTestCase {
         XCTAssertTrue(driver.contains("install-sharing.cmd"))
     }
 
+    func testFolderCredentialIsDiscDataNeverCodeCopiedToTools() throws {
+        let password = String(repeating: "b", count: 64)
+        let connection = WindowsFolderConnection(password: password, shares: ["Desktop"])
+        let files = WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: nil, managedSharing: connection)
+        let script = try XCTUnwrap(files.first { $0.relativePath == "lumen/connect-folders.ps1" }?.contents)
+        // The script (copied to world-readable Tools) is fixed and holds no secret.
+        XCTAssertEqual(script, WindowsFolderConnection.script)
+        XCTAssertFalse(script.contains(password))
+        XCTAssertFalse(script.contains("FromBase64String"))
+        XCTAssertTrue(script.contains("connect-folders.json"))
+        XCTAssertTrue(script.contains("cmdkey.exe"))
+        XCTAssertTrue(script.contains("^[0-9a-f]{64}$"))
+        let data = try XCTUnwrap(files.first { $0.relativePath == "lumen/connect-folders.json" }?.contents)
+        XCTAssertEqual(try JSONDecoder().decode(WindowsFolderConnection.self, from: Data(data.utf8)), connection)
+        // Data documents with credentials are removed after copying the tools.
+        let driver = try XCTUnwrap(files.first { $0.relativePath == "lumen/install-drivers.cmd" }?.contents)
+        XCTAssertTrue(driver.contains(#"del /q "%ProgramData%\Lumen\Tools\*.json""#))
+        let xml = try XCTUnwrap(files.first { $0.relativePath == "autounattend.xml" }?.contents)
+        XCTAssertTrue(xml.contains(#"del /q &quot;%ProgramData%\Lumen\Tools\*.json&quot;"#))
+        // Startup runs only the protected copy, never a script from any CD volume.
+        let install = WindowsFolderConnection.installScript
+        let encoded = try XCTUnwrap(install.components(separatedBy: "-EncodedCommand ").last?.components(separatedBy: "\r\n").first)
+        let installer = try XCTUnwrap(String(data: XCTUnwrap(Data(base64Encoded: encoded)), encoding: .utf16LittleEndian))
+        let launchEncoded = try XCTUnwrap(installer.components(separatedBy: "-EncodedCommand ").last?.components(separatedBy: "'").first)
+        let launch = try XCTUnwrap(String(data: XCTUnwrap(Data(base64Encoded: launchEncoded)), encoding: .utf16LittleEndian))
+        XCTAssertTrue(launch.contains(#"Lumen\Tools\connect-folders.ps1"#))
+        XCTAssertFalse(launch.contains("LUMENSETUP"))
+        XCTAssertFalse(launch.contains("DriveType"))
+    }
+
+    func testGuestToolsFolderIsWritableOnlyByAdministratorsAndSystem() throws {
+        let files = WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: nil)
+        let driver = try XCTUnwrap(files.first { $0.relativePath == "lumen/install-drivers.cmd" }?.contents)
+        XCTAssertTrue(driver.contains("/inheritance:r"))
+        XCTAssertTrue(driver.contains("*S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX"))
+        XCTAssertTrue(driver.contains("/setowner *S-1-5-32-544"))
+        XCTAssertTrue(driver.contains("/reset /T"))
+        // The folder is protected before the tools are copied in.
+        let protect = try XCTUnwrap(driver.range(of: "call :ProtectTools"))
+        let copy = try XCTUnwrap(driver.range(of: #"xcopy "%~dp0*""#))
+        XCTAssertLessThan(protect.lowerBound, copy.lowerBound)
+        XCTAssertFalse(driver.contains("S-1-1-0"), "Everyone must not be granted access")
+    }
+
     func testWindowsMenuCommandsUseFixedGuestPathsAndSupportedKeys() {
-        for command in [WindowsGuestCommands.installDrivers, WindowsGuestCommands.displaySettings,
-                        WindowsGuestCommands.networkSettings, WindowsGuestCommands.deviceManager, WindowsGuestCommands.connectFolders] {
+        let marker = WindowsGuestCommands.makeDiscMarker()
+        XCTAssertTrue(WindowsGuestCommands.isDiscMarker(marker))
+        XCTAssertNotEqual(marker, WindowsGuestCommands.makeDiscMarker())
+        let install = WindowsGuestCommands.installDrivers(marker: marker)
+        let connect = WindowsGuestCommands.connectFolders(marker: marker)
+        for command in [install, WindowsGuestCommands.displaySettings,
+                        WindowsGuestCommands.networkSettings, WindowsGuestCommands.deviceManager, connect] {
             XCTAssertTrue(GuestKeyboard.supports(command))
             XCTAssertLessThan(command.count, 260, "Windows Run has a limited command length")
             XCTAssertFalse(command.contains("/Users/"))
         }
-        XCTAssertTrue(WindowsGuestCommands.installDrivers.contains("-Verb RunAs"))
-        XCTAssertTrue(WindowsGuestCommands.installDrivers.contains("-FileSystemLabel LUMENSETUP"))
-        XCTAssertFalse(WindowsGuestCommands.installDrivers.contains("ExecutionPolicy"))
+        XCTAssertTrue(install.contains("-Verb RunAs"))
+        XCTAssertTrue(install.contains("-FileSystemLabel LUMENSETUP"))
+        XCTAssertFalse(install.contains("ExecutionPolicy"))
+        // A spoofed LUMENSETUP ISO cannot know the marker of the disc Lumen just built.
+        for command in [install, connect] {
+            XCTAssertTrue(command.contains(#"\lumen\id-"# + marker))
+            XCTAssertTrue(command.contains("if($v){"))
+        }
+        let files = WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: nil, discMarker: marker)
+        XCTAssertEqual(files.first { $0.relativePath == "lumen/id-" + marker }?.contents, marker)
+        XCTAssertFalse(WindowsSetupMedia.files(bypassChecks: false, sharedFolderName: nil, discMarker: "../x")
+            .contains { $0.relativePath.hasPrefix("lumen/id-") })
+        for invalid in ["", "ABCDEF0123456789", "0123456789abcde", "0123456789abcdef0", "';calc;'00000000"] {
+            XCTAssertFalse(WindowsGuestCommands.isDiscMarker(invalid))
+        }
     }
+
     private var temporary: URL!
     override func setUpWithError() throws {
         let root = ProcessInfo.processInfo.environment["LUMEN_TEST_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }

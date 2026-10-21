@@ -15,6 +15,8 @@ import tempfile
 
 SOURCE = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-0.1.302.iso"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+# Every fetched file must match this committed list; a changed or added file fails the build.
+MANIFEST = ROOT / "scripts/windows-drivers.sha256.json"
 
 
 class RemoteISO:
@@ -109,6 +111,10 @@ def main():
     parser.add_argument("--metadata", type=pathlib.Path, help="Optional local ISO or downloaded prefix for directory reads")
     parser.add_argument("--output", type=pathlib.Path, default=ROOT / ".runtime/WindowsDrivers.iso")
     args = parser.parse_args()
+    pinned = json.loads(MANIFEST.read_text())
+    if pinned.get("source") != SOURCE:
+        raise ValueError("Driver manifest does not match the pinned driver ISO")
+    expected = pinned["files"]
     iso = RemoteISO(SOURCE, args.metadata)
     requested = []
     for driver in ("NetKVM", "viogpudo", "Balloon", "vioserial", "vioinput", "viorng", "vioscsi", "viostor"):
@@ -120,6 +126,13 @@ def main():
     for entry in iso.children(iso.root):
         if not entry[3] and any(word in entry[0].lower() for word in ("license", "copying", "notice")):
             requested.append((entry[0], entry))
+    names = {path for path, _ in requested}
+    if names != set(expected):
+        raise ValueError("Driver file list differs from the manifest: "
+                         + ", ".join(sorted(names.symmetric_difference(expected))))
+    for path, entry in requested:
+        if entry[2] != expected[path]["size"]:
+            raise ValueError(f"Driver size mismatch: {path}")
     print(f"Fetching {len(requested)} ARM64 driver files ({sum(e[2] for _, e in requested) / 1048576:.1f} MiB)", flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="lumen-arm64-drivers-", dir=args.output.parent) as temp:
@@ -128,6 +141,8 @@ def main():
         def fetch(item):
             path, entry = item
             data = iso.read(entry[1], entry[2])
+            if hashlib.sha256(data).hexdigest() != expected[path]["sha256"]:
+                raise ValueError(f"Driver SHA-256 mismatch: {path}")
             if path.lower().endswith((".sys", ".exe", ".dll")):
                 if data[:2] != b"MZ":
                     raise ValueError(f"Not a PE executable: {path}")
