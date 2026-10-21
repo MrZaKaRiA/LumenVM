@@ -73,6 +73,8 @@ final class ManagedWindowsSharing {
         } catch { stop(); throw error }
     }
 
+    // `cmd:` spawns nc per guest connection. `tcp:` (QEMU 11.1) opens one chardev connection at
+    // launch and cannot reconnect, so SMB reconnects after a guest drop would fail.
     var forwardingOption: String { "guestfwd=tcp:10.0.2.4:445-cmd:/usr/bin/nc 127.0.0.1 \(port)" }
 
     func stop() {

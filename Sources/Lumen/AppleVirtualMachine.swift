@@ -92,8 +92,11 @@ final class AppleVirtualMachine: NSObject, ObservableObject, VZVirtualMachineDel
             virtualMachine = machine
             let installation = VZMacOSInstaller(virtualMachine: machine, restoringFromImageAt: restoreImageURL)
             installer = installation
+            // Throttle to ≥0.5% steps or 250 ms so SwiftUI is not re-rendered for every KVO tick.
+            let throttle = ProgressThrottle()
             progressObservation = installation.progress.observe(\.fractionCompleted, options: [.initial, .new]) { [weak self] value, _ in
                 let fraction = value.fractionCompleted
+                guard throttle.shouldPublish(fraction) else { return }
                 Task { @MainActor [weak self] in
                     guard self?.state == .installing else { return }
                     self?.progress = fraction
@@ -432,5 +435,21 @@ struct GuestDisplayView: NSViewRepresentable {
         }
         view.capturesSystemKeys = engine.record.captureSystemKeys
         view.automaticallyReconfiguresDisplay = engine.record.autoResizeDisplay
+    }
+}
+
+/// Thread-safe gate for KVO progress callbacks, which arrive on arbitrary queues.
+private final class ProgressThrottle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastFraction = -1.0
+    private var lastTime: TimeInterval = 0
+
+    func shouldPublish(_ fraction: Double) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard fraction >= 1 || abs(fraction - lastFraction) >= 0.005 || now - lastTime >= 0.25 else { return false }
+        lastFraction = fraction
+        lastTime = now
+        return true
     }
 }
