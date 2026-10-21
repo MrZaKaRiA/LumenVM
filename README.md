@@ -2,6 +2,8 @@
 
 **Lumen — native virtual machines for Apple Silicon.**
 
+[![Downloads](https://img.shields.io/github/downloads/MrZaKaRiA/LumensVM/total)](https://github.com/MrZaKaRiA/LumensVM/releases) [![Latest release](https://img.shields.io/github/v/release/MrZaKaRiA/LumensVM)](https://github.com/MrZaKaRiA/LumensVM/releases/latest)
+
 A SwiftUI app for running macOS, ARM64 Linux and experimental Windows 11 ARM64 guests. A translucent machine library, separate VM windows and disks that grow as you use them make virtual machines feel at home on your Mac.
 
 [Release v27.1.0](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.1.0) · [User guide](docs/user-guide.md) · [Compatibility](docs/compatibility.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
