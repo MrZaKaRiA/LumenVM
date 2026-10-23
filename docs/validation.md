@@ -1,6 +1,6 @@
 # Validation record
 
-## Storage accounting, reclaim and guest TRIM, October 23, 2026
+## v27.2.0 storage accounting, reclaim and guest TRIM, October 23, 2026
 
 The latest storage changes passed **48 core tests** and the display-redraw regression. New tests cover byte-for-byte zero-block reclamation with an unaligned tail, unchanged capacity/configuration, already-sparse and nonzero-only images, hard-link/symlink rejection, runtime-lease exclusion and cancellation both before and after partial work. QEMU now holds the same runtime lease as native guests, blocking disk maintenance while the process runs. Existing v27.1.0 security, Rosetta, nested-virtualization, restore-image and performance work was retained.
 
@@ -8,9 +8,9 @@ The latest storage changes passed **48 core tests** and the display-redraw regre
 
 Live library UI checks used a separate disposable 64 GiB image with no running guest. The row showed **16.8 MB on host** and **64 GiB guest capacity**. The actual **Reclaim disk space…** menu and confirmation reduced measured allocation from 16,777,216 to 4,096 bytes, updated the row/total immediately and displayed a measured before/after result. Capacity and the sentinel were preserved. Repeating the action displayed **No additional space reclaimed** with 4 KB before/after and the explicit explanation that enabling TRIM does not prove reclaimed space. The existing eight-second polling interval remains gated on active VMs, with no foreground-app check. Release compilation and deep/strict signature verification passed.
 
-A final disposable-library check removed one empty fixture disk before opening the library. Its row displayed **Host usage unavailable**, and the footer displayed **Disk images: usage unavailable** instead of a false zero or partial total. The two valid sparse images still correctly displayed zero host allocation. The final rebuild, 48 core tests and display-redraw regression passed after this refinement.
+A final disposable-library check removed one empty fixture disk before opening the library. Its row displayed **Host usage unavailable**, and the footer displayed **Disk images: usage unavailable** instead of a false zero or partial total. The two valid sparse images still correctly displayed zero host allocation. The final rebuild, 48 core tests and display-redraw regression passed after this refinement. App signature verification passed.
 
-The original VM library and installer images were not modified. Test guest disks, fixtures and unused extraction/download files were removed after validation. This feature is implemented locally under **Unreleased**; no tag or GitHub release was published for these changes.
+The original VM library and installer images were not modified. Test guest disks, fixtures and unused extraction/download files were removed after validation. This section records the changes now prepared for the v27.2.0 source release. Windows/NTFS behavior remains unverified.
 
 ## Historical build and regression tests, October 12, 2026
 

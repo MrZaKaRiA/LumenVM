@@ -2,14 +2,23 @@
 
 ## Unreleased
 
-### Storage accounting and reclamation
+## v27.2.0
 
-- Explicitly label allocated host disk-image bytes and maximum guest capacity; retain the eight-second active-VM refresh, including while a separate guest app is frontmost.
-- Show unavailable allocation explicitly when an image cannot be inspected, instead of reporting a false zero or incomplete combined total.
-- Add **Storage & Reclamation…** and **Reclaim Disk Space…** to the library and VM menu, with progress, cancellation and measured before/after results.
-- Reclaim only verified all-zero host blocks in stopped images, preserving byte contents and capacity without copying or preallocating a second disk.
-- Extend the runtime lease to QEMU so a running Windows guest also blocks disk maintenance across Lumen processes.
-- Validate disposable Linux/ext4 write/delete/TRIM through QEMU/NVMe and Apple/Virtio; document Windows/NTFS and other untested paths separately.
+Source release for Apple Silicon. Adds measured sparse-disk reclamation, clearer storage accounting and disposable Linux TRIM validation. Windows remains experimental; the new reclaim path is not validated on Windows/NTFS.
+
+### Storage
+
+- Show maximum guest disk capacity separately from allocated host disk-image blocks, with active-VM refresh every eight seconds. Unreadable images show unavailable instead of a false zero.
+- Add a cancellable **Reclaim Disk Space** action for stopped VMs. It releases only verified all-zero blocks, preserves contents and capacity, and reports measured allocation before and after.
+- Extend the runtime lease to QEMU so running VMs block concurrent disk operations.
+- Validate write → delete → `fstrim` using disposable Linux/ext4 guests on QEMU/NVMe and Apple/Virtio; include a repeatable validation script and report the platform limits.
+
+### Validation
+
+- 48 core tests and the display-redraw regression pass; release app builds and passes deep/strict signature verification.
+- Disposable Linux/ext4 TRIM recovered approximately 128 MiB after deleting a 128 MiB file on both tested backends. The disk capacity and sentinel data were preserved.
+- Live library checks verified measured reclamation, no-op reporting and unavailable allocation handling.
+- Windows/NTFS reclamation, installed macOS guest behavior and general filesystem/host coverage remain unverified.
 
 ## v27.1.0
 

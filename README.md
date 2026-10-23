@@ -6,7 +6,7 @@
 
 A SwiftUI app for running macOS, ARM64 Linux and experimental Windows 11 ARM64 guests. A translucent machine library, separate VM windows and disks that grow as you use them make virtual machines feel at home on your Mac.
 
-[Release v27.1.0](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.1.0) · [User guide](docs/user-guide.md) · [Compatibility](docs/compatibility.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
+[Release v27.2.0](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.2.0) · [User guide](docs/user-guide.md) · [Compatibility](docs/compatibility.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
 <p align="center"><img src="assets/lumen_ui.png" alt="Lumen's native macOS virtual machine library, shown with demo machines" width="920"></p>
 
@@ -34,9 +34,9 @@ A SwiftUI app for running macOS, ARM64 Linux and experimental Windows 11 ARM64 g
 
 This release does **not** provide Windows Direct3D/Metal acceleration, snapshots/clones, Parallels import, native Wayland clipboard, macOS clipboard, file clipboard, arbitrary guest-desktop drag-and-drop or printer sharing. The [feature audit](docs/feature-audit.md) separates implemented features from remaining work.
 
-## Get v27.1.0
+## Get v27.2.0
 
-v27.1.0 is a **source release**. Download the [release](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.1.0), or clone the repository, then build on an Apple Silicon Mac. A notarized standalone installer is not included.
+v27.2.0 is a **source release**. Download the [release](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.2.0), or clone the repository, then build on an Apple Silicon Mac. A notarized standalone installer is not included.
 
 ### Requirements
 
@@ -48,7 +48,7 @@ v27.1.0 is a **source release**. Download the [release](https://github.com/MrZaK
 ```sh
 git clone https://github.com/MrZaKaRiA/LumensVM.git
 cd LumensVM
-git checkout v27.1.0
+git checkout v27.2.0
 brew install qemu swtpm python@3.14 sevenzip
 bash scripts/build.sh
 open build/Lumen.app
@@ -77,7 +77,7 @@ codesign --verify --deep --strict build/Lumen.app
 bash scripts/release-audit.sh
 ```
 
-The latest local validation passed 48 core tests and the display-redraw regression, plus disposable Linux/ext4 write/delete/TRIM checks on both storage backends and live reclaim-menu checks. Earlier releases also passed live Abyss lifecycle/Dock checks. The v27.1.0 security, performance and Rosetta/nested-virtualization changes have not received full installed-guest acceptance. Windows private-sharing transport has separate tests. These checks do not certify every guest or a production-ready Windows installation. The release audit deliberately reports missing notarization and standalone runtime packaging. Detailed results are in [validation](docs/validation.md).
+The latest local validation passed 48 core tests and the display-redraw regression, plus disposable Linux/ext4 write/delete/TRIM checks on both storage backends and live reclaim-menu checks. Earlier releases also passed live Abyss lifecycle/Dock checks. The security, performance, Rosetta/nested-virtualization and restore-image changes from v27.1.0 have not received full installed-guest acceptance. Windows private-sharing transport has separate tests. These checks do not certify every guest or a production-ready Windows installation. The release audit deliberately reports missing notarization and standalone runtime packaging. Detailed results are in [validation](docs/validation.md).
 
 ## Documentation and contributing
 
