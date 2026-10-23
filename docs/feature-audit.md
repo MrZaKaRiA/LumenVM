@@ -25,7 +25,7 @@ The four reference screenshots are a product target, not evidence of features im
 
 | Reference feature | Current status | Work needed for parity |
 | --- | --- | --- |
-| Sparse growing disks | Implemented; no capacity preallocation | Guest TRIM/compaction validation and aggregate snapshot accounting |
+| Sparse growing disks | Separate host allocation/capacity, 8-second active refresh, and measured stopped-disk zero-block reclaim. Disposable Linux/ext4 TRIM passed on QEMU/NVMe and Apple/Virtio on this host. | Windows/NTFS and installed-macOS reclamation acceptance; other filesystems and aggregate snapshot accounting |
 | Retina / 5K | Resolution presets, native auto-resize, Windows VirtIO display driver path | External-display matrix and 5K hardware test; installed Windows resizing passed at 2× |
 | Windows graphics | VirtIO display-only driver, Cocoa framebuffer, CPU virtualization through HVF | A Windows ARM64 WDDM 3D driver and host Metal graphics translation; this is substantial engine work |
 | macOS / Linux graphics | Existing Apple Virtualization devices | Measure guest API/3D capabilities before promising OpenGL/Metal versions |

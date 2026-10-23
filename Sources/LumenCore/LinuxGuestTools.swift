@@ -90,7 +90,7 @@ public enum LinuxGuestTools {
           fi
           systemctl start spice-vdagentd.service || failed=1
           systemctl is-active spice-vdagentd.service || failed=1
-          # Return freed guest blocks to the Mac so the sparse disk file can shrink.
+          # Request discard of freed guest blocks. Host reclamation is backend/filesystem dependent.
           if systemctl cat fstrim.timer >/dev/null 2>&1; then
             systemctl enable --now fstrim.timer || echo 'Could not enable fstrim.timer; run fstrim -av occasionally to reclaim disk space.' >&2
           fi

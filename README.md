@@ -13,7 +13,7 @@ A SwiftUI app for running macOS, ARM64 Linux and experimental Windows 11 ARM64 g
 ## Features
 
 - **Native macOS interface:** SwiftUI library, per-machine settings, guest windows and OS icons. macOS and Linux guests run in separate app processes with their own Dock tiles.
-- **Sparse storage:** the virtual disk's capacity is a limit, not SSD space reserved upfront. Lumen displays allocated disk blocks and supports growing stopped disks.
+- **Sparse storage:** separate allocated host disk-image bytes and maximum guest capacity, with live allocation refresh every eight seconds while a VM is active. Stopped disks support growth and measured, cancellable zero-block reclamation without a second disk copy. See [storage and reclamation](docs/storage-reclamation.md).
 - **Apple Silicon virtualization:** macOS and compatible ARM64 Linux through Apple's Virtualization framework; Windows 11 ARM64 through QEMU with HVF.
 - **Rosetta and nested virtualization:** opt-in Rosetta for running x86-64 Linux binaries in Linux guests, nested virtualization on supported hosts (macOS 15+, M3 or later) and one-click download of the latest supported macOS restore image.
 - **Display and input:** configurable resolution, automatic resizing where the guest supports it, Retina display controls and native full-screen windows.
@@ -77,7 +77,7 @@ codesign --verify --deep --strict build/Lumen.app
 bash scripts/release-audit.sh
 ```
 
-The latest local validation passed 42 core tests and the display-redraw regression; earlier releases also passed live Abyss lifecycle/Dock checks. The v27.1.0 security, performance and Rosetta/nested-virtualization changes have not yet been exercised against live guests. Windows private-sharing transport has separate tests. These checks do not certify every guest or a production-ready Windows installation. The release audit deliberately reports missing notarization and standalone runtime packaging. Detailed results are in [validation](docs/validation.md).
+The latest local validation passed 48 core tests and the display-redraw regression, plus disposable Linux/ext4 write/delete/TRIM checks on both storage backends and live reclaim-menu checks. Earlier releases also passed live Abyss lifecycle/Dock checks. The v27.1.0 security, performance and Rosetta/nested-virtualization changes have not received full installed-guest acceptance. Windows private-sharing transport has separate tests. These checks do not certify every guest or a production-ready Windows installation. The release audit deliberately reports missing notarization and standalone runtime packaging. Detailed results are in [validation](docs/validation.md).
 
 ## Documentation and contributing
 

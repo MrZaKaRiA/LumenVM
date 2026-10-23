@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Storage accounting and reclamation
+
+- Explicitly label allocated host disk-image bytes and maximum guest capacity; retain the eight-second active-VM refresh, including while a separate guest app is frontmost.
+- Show unavailable allocation explicitly when an image cannot be inspected, instead of reporting a false zero or incomplete combined total.
+- Add **Storage & Reclamation…** and **Reclaim Disk Space…** to the library and VM menu, with progress, cancellation and measured before/after results.
+- Reclaim only verified all-zero host blocks in stopped images, preserving byte contents and capacity without copying or preallocating a second disk.
+- Extend the runtime lease to QEMU so a running Windows guest also blocks disk maintenance across Lumen processes.
+- Validate disposable Linux/ext4 write/delete/TRIM through QEMU/NVMe and Apple/Virtio; document Windows/NTFS and other untested paths separately.
+
 ## v27.1.0
 
 Source release for Apple Silicon. Security hardening, performance work and new opt-in Apple Virtualization features. Windows remains experimental; these changes have not yet been exercised against live Windows or Linux guests.

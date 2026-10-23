@@ -111,7 +111,9 @@ Touch ID login stores newly saved guest passwords in the macOS Keychain with use
 
 ## Storage and compatibility
 
-A 64 GiB sparse disk is a capacity limit, not 64 GiB reserved on the SSD. Guest writes allocate blocks; deleting guest files may require TRIM or compaction before the host reclaims them. Snapshot/clone accounting is not implemented. The live library counter currently reports disk-image blocks, not total firmware, logs, runtime or installer storage.
+A 64 GiB sparse disk is a capacity limit, not 64 GiB reserved on the SSD. Each row separately labels **on host** allocation and **guest capacity**. Host allocation refreshes every eight seconds while a VM is active and can decrease after successful guest TRIM. It measures disk-image blocks, not total firmware, logs, runtime/installer storage or unique APFS volume consumption.
+
+To reclaim, run `sudo fstrim -av` inside Linux, or use **Optimize Drives → Optimize** inside Windows, then shut down the VM. Choose **Reclaim disk space…** in its row menu or **Virtual Machine → Reclaim Disk Space…**. The cancellable scan releases blocks already containing only zeroes and reports the measured before/after allocation. It does not shrink guest capacity, copy the whole image or infer which nonzero blocks belong to deleted files. If no allocation is released, the result says so. **Storage & reclamation…** shows the accounting and preparation steps. See [storage reclamation](storage-reclamation.md) for test results and limitations. Snapshot/clone accounting is not implemented.
 
 Arch, Void and board-specific ARM distributions may need prepared UEFI images. Android and ChromeOS are not implemented. See [compatibility](compatibility.md) and [validation evidence](validation.md).
 

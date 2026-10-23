@@ -1,6 +1,18 @@
-# Validation — 12 October 2026
+# Validation record
 
-## Build and regression tests
+## Storage accounting, reclaim and guest TRIM, October 23, 2026
+
+The latest storage changes passed **48 core tests** and the display-redraw regression. New tests cover byte-for-byte zero-block reclamation with an unaligned tail, unchanged capacity/configuration, already-sparse and nonzero-only images, hard-link/symlink rejection, runtime-lease exclusion and cancellation both before and after partial work. QEMU now holds the same runtime lease as native guests, blocking disk maintenance while the process runs. Existing v27.1.0 security, Rosetta, nested-virtualization, restore-image and performance work was retained.
+
+`scripts/validate-storage-trim.py` booted disposable Linux/ext4 guests through QEMU/HVF/NVMe and Apple Virtualization/Virtio on macOS 27.0.1. A 128 MiB random file increased host allocation from about 24.5 to 152.5 MiB. Deleting it alone did not reduce allocation; `fstrim` returned allocation to about 24.5 MiB on both paths. Capacity stayed 512 MiB, the retained sentinel was unchanged, and the guests shut down normally. No host folders or networking were exposed. Exact bytes, reproduction and the limits of this result are in [storage reclamation](storage-reclamation.md). This is not Windows/NTFS or installed-macOS acceptance.
+
+Live library UI checks used a separate disposable 64 GiB image with no running guest. The row showed **16.8 MB on host** and **64 GiB guest capacity**. The actual **Reclaim disk space…** menu and confirmation reduced measured allocation from 16,777,216 to 4,096 bytes, updated the row/total immediately and displayed a measured before/after result. Capacity and the sentinel were preserved. Repeating the action displayed **No additional space reclaimed** with 4 KB before/after and the explicit explanation that enabling TRIM does not prove reclaimed space. The existing eight-second polling interval remains gated on active VMs, with no foreground-app check. Release compilation and deep/strict signature verification passed.
+
+A final disposable-library check removed one empty fixture disk before opening the library. Its row displayed **Host usage unavailable**, and the footer displayed **Disk images: usage unavailable** instead of a false zero or partial total. The two valid sparse images still correctly displayed zero host allocation. The final rebuild, 48 core tests and display-redraw regression passed after this refinement.
+
+The original VM library and installer images were not modified. Test guest disks, fixtures and unused extraction/download files were removed after validation. This feature is implemented locally under **Unreleased**; no tag or GitHub release was published for these changes.
+
+## Historical build and regression tests, October 12, 2026
 
 The release build produces `build/Lumen.app`, locally signed with virtualization and hypervisor entitlements. The nested QEMU helper is also signed. `codesign --verify --deep --strict` passes.
 

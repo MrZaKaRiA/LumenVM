@@ -79,6 +79,15 @@ struct LumenApp: App {
                         }
                     }
                     Button("Show Machine in Finder") { model.reveal(machine) }
+                    if !model.isGuestProcess {
+                        Button("Storage & Reclamation…") { model.showStorageInformation(machine) }
+                        if model.reclaimingID == machine.id {
+                            Button("Cancel Disk Reclamation") { model.cancelDiskReclamation() }
+                        } else {
+                            Button("Reclaim Disk Space…") { model.requestDiskReclamation(machine) }
+                                .disabled(!model.canReclaimDisk(machine))
+                        }
+                    }
                     if machine.guest.usesAppleVirtualization && !machine.guest.isMacOS {
                         Button("Install / Repair Linux Guest Tools…") { model.installLinuxTools(machine) }
                             .disabled(model.state(for: machine.id) != .running)
@@ -190,6 +199,14 @@ final class LumenDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if model?.reclaimingID != nil {
+            let alert = NSAlert()
+            alert.messageText = "Disk reclamation is in progress"
+            alert.informativeText = "Wait for it to finish, or cancel it in the Virtual Machine menu, before quitting Lumen."
+            alert.addButton(withTitle: "Keep Lumen Open")
+            alert.runModal()
+            return .terminateCancel
+        }
         guard model?.hasActiveMachines == true || diagnosticEngine?.state.isActive == true || diagnosticQEMU?.isProcessRunning == true else { return .terminateNow }
         if model?.isGuestProcess == true, let machine = model?.machines.first {
             let alert = NSAlert()

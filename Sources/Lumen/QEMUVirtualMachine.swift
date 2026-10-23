@@ -28,6 +28,7 @@ final class QEMUVirtualMachine: ObservableObject {
     private var usesCompatibilityDisplay: Bool { record.windowsCompatibilityDisplay || needsAutomaticDisplaySetup }
     private var managedSharing: ManagedWindowsSharing?
     private var process: Process?
+    private var runtimeLease: GuestRuntimeLease?
     private var inputPipe: Pipe?
     private var outputPipe: Pipe?
     private var logHandle: FileHandle?
@@ -119,11 +120,12 @@ final class QEMUVirtualMachine: ObservableObject {
                 throw QEMUError("Choose a readable Windows ARM64 ISO before starting the installer.")
             }
         }
-        let firmware = try prepareFirmware(executable: executable)
+        runtimeLease = try GuestRuntimeLease(directory: location.directory)
         var launchSucceeded = false
         defer {
             if !launchSucceeded { cleanup(); state = .failed }
         }
+        let firmware = try prepareFirmware(executable: executable)
         errorMessage = nil
         state = .starting
         let arguments: [String]
@@ -1175,6 +1177,7 @@ final class QEMUVirtualMachine: ObservableObject {
         inputPipe = nil
         outputPipe = nil
         process = nil
+        runtimeLease = nil
         launchID = nil
         monitorReady = false
         for id in Array(replies.keys) {

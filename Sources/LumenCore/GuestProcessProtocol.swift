@@ -62,7 +62,7 @@ public final class GuestRuntimeLease {
         }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             close(fd)
-            throw LibraryError.invalidConfiguration("This VM is already open in its own app. Shut it down there before starting it again, changing its settings or deleting it.")
+            throw LibraryError.invalidConfiguration("This VM is in use by a guest app or disk operation. Shut it down and finish or cancel reclamation before starting it again, changing settings or deleting it.")
         }
         descriptor = fd
     }

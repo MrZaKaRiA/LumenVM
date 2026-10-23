@@ -17,8 +17,10 @@ struct LibraryView: View {
     @State private var machineForTouchID: VirtualMachineRecord?
     @AppStorage("autoStartMachines") private var autoStartMachines = true
 
-    private var allocatedBytes: Int64 {
-        model.machines.reduce(0) { $0 + model.allocatedBytes(for: $1.id) }
+    private var allocatedBytes: Int64? {
+        let measured = model.machines.compactMap { model.allocatedBytes(for: $0.id) }
+        guard measured.count == model.machines.count else { return nil }
+        return measured.reduce(0, +)
     }
 
     var body: some View {
@@ -103,7 +105,11 @@ struct LibraryView: View {
             }
             Button("Cancel", role: .cancel) { machineToErase = nil }
         } message: {
-            Text("This cannot be undone. The VM currently uses \(ByteCountFormatter.string(fromByteCount: machineToErase.map { model.allocatedBytes(for: $0.id) } ?? 0, countStyle: .file)) on your Mac. The original installer file is kept.")
+            if let bytes = machineToErase.flatMap({ model.allocatedBytes(for: $0.id) }) {
+                Text("This cannot be undone. The disk image currently allocates \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) on your Mac. The original installer file is kept.")
+            } else {
+                Text("This cannot be undone. Current disk-image allocation is unavailable. The original installer file is kept.")
+            }
         }
         .confirmationDialog("Force stop \(machineToForceStop?.name ?? "this machine")?", isPresented: Binding(get: { machineToForceStop != nil }, set: { if !$0 { machineToForceStop = nil } }), titleVisibility: .visible) {
             Button("Force Stop", role: .destructive) {
@@ -184,7 +190,8 @@ struct LibraryView: View {
             if model.machines.isEmpty {
                 Text("Room for more. Disks grow as you use them.")
             } else {
-                Text("\(ByteCountFormatter.string(fromByteCount: allocatedBytes, countStyle: .file)) on host SSD")
+                Text(allocatedBytes.map { "Disk images: \(ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)) on host" } ?? "Disk images: usage unavailable")
+                    .help("Allocated disk-image blocks only; excludes firmware, tools and other VM files. Refreshes every 8 seconds while a VM is active.")
                 Text("·").foregroundStyle(.white.opacity(0.2))
                 Text("VM RAM: \(model.activeMemoryGiB)/\(model.resourcePolicy.guestMemoryBudgetGiB(on: model.hostResources)) GiB")
             }
@@ -337,17 +344,21 @@ private struct MachineRow: View {
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 7) {
-                Text(ByteCountFormatter.string(fromByteCount: model.allocatedBytes(for: machine.id), countStyle: .file))
+                Text(model.allocatedBytes(for: machine.id).map { "\(ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)) on host" } ?? "Host usage unavailable")
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.7))
-                Text("of \(machine.diskGiB) GiB max")
+                Text("\(machine.diskGiB) GiB guest capacity")
                     .font(.system(size: 10))
                     .foregroundStyle(.white.opacity(0.34))
             }
             .padding(.trailing, 17)
-            .help("Space currently allocated to the disk image, followed by its maximum guest capacity.")
+            .help("Allocated disk-image blocks on the Mac and maximum guest capacity. Host allocation refreshes every 8 seconds while a VM is active; it can decrease after successful TRIM.")
 
-            if busy {
+            if model.reclaimingID == machine.id {
+                ProgressView(value: model.reclaimProgress).progressViewStyle(.circular)
+                    .frame(width: 34, height: 34)
+                    .help("Reclaiming disk space · \(Int(model.reclaimProgress * 100))%")
+            } else if busy {
                 ProgressView().controlSize(.small).frame(width: 34, height: 34)
                     .help(state.title)
             } else {
@@ -398,16 +409,25 @@ private struct MachineRow: View {
                 }
                 if !state.isActive && machine.installerPath != nil && machine.guest != .macOS {
                     Button("Boot from installer", systemImage: "opticaldisc") { model.start(machine, bootInstaller: true) }
+                        .disabled(model.reclaimingID == machine.id)
                 }
                 if !state.isActive && machine.installerPath != nil {
                     Button("Eject installer", systemImage: "eject") {
                         do { try model.ejectInstaller(machine) } catch { model.errorMessage = error.localizedDescription }
                     }
+                    .disabled(model.reclaimingID == machine.id)
                 }
                 Button("Settings…", systemImage: "slider.horizontal.3", action: onEdit)
+                Button("Storage & reclamation…", systemImage: "internaldrive") { model.showStorageInformation(machine) }
+                if model.reclaimingID == machine.id {
+                    Button("Cancel disk reclamation") { model.cancelDiskReclamation() }
+                } else {
+                    Button("Reclaim disk space…", systemImage: "arrow.down.right.and.arrow.up.left") { model.requestDiskReclamation(machine) }
+                        .disabled(!model.canReclaimDisk(machine))
+                }
                 Button("Show in Finder", systemImage: "folder") { model.reveal(machine) }
                 Divider()
-                Button("Move to Trash", role: .destructive, action: onRemove).disabled(state.isActive)
+                Button("Move to Trash", role: .destructive, action: onRemove).disabled(state.isActive || model.reclaimingID == machine.id)
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 17, weight: .medium))
                     .foregroundStyle(.white.opacity(0.45))

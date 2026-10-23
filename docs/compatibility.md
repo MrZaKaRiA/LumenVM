@@ -38,9 +38,11 @@ Resource limits provide configuration headroom for macOS; they do not reserve de
 
 ## SSD behavior
 
-`ftruncate` creates a sparse raw disk without allocating its full capacity. Actual block use grows as the guest writes data. Firmware, drivers, logs, installers and QEMU runtime dependencies consume additional host space. The library counter currently measures disk-image blocks only.
+`ftruncate` creates a sparse raw disk without allocating its full capacity. The library shows maximum guest capacity separately from allocated host disk-image blocks (`st_blocks × 512`), refreshing every eight seconds while any VM is active, including when a guest's separate app is frontmost. This is not total VM-bundle size or unique host-volume consumption: firmware, tools, installers, dependencies, snapshots and shared APFS blocks have separate accounting.
 
-Grow disks while stopped, then extend guest partitions/filesystems. Shrinking is rejected. Guest deletion does not always immediately return host space; reclamation needs guest discard/TRIM support or future compaction. Snapshots and clones are not implemented.
+Grow disks while stopped, then extend guest partitions/filesystems. Shrinking is rejected. **Reclaim Disk Space…** scans a stopped disk and punches holes only in complete host blocks that read back as zero. It preserves bytes, capacity, disk identity and configuration, requires the runtime lease, uses no second disk copy and can be cancelled. The result reports measured allocation before/after, including an explicit no-space-reclaimed result. It cannot identify deleted guest data that remains nonzero. A host filesystem without hole-punch support reports an error. Snapshots and other copies may retain physical blocks.
+
+Disposable ARM64 Linux/ext4 tests on macOS 27.0.1 verified write → delete → `fstrim` using both QEMU/NVMe (matching the Windows backend's disk options) and Apple Virtualization/Virtio (automatic cache, fsync). A 128 MiB file grew host allocation from about 24.5 to 152.5 MiB; deletion alone left it unchanged; `fstrim` restored about 24.5 MiB. Guest capacity remained 512 MiB and a retained sentinel was unchanged. This validates those Linux/storage paths on this host, not Windows/NTFS, installed macOS or every host filesystem. See [storage reclamation](storage-reclamation.md) for exact measurements and reproduction.
 
 ## Primary references
 

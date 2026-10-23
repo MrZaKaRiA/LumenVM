@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-public struct DiskUsage: Equatable {
+public struct DiskUsage: Equatable, Sendable {
     public let capacityBytes: Int64
     public let allocatedBytes: Int64
 }
@@ -99,6 +99,14 @@ public final class MachineLibrary {
         guard descriptor >= 0 else { throw LibraryError.diskCreation(String(cString: strerror(errno))) }
         defer { close(descriptor) }
         guard ftruncate(descriptor, off_t(requested)) == 0 else { throw LibraryError.diskCreation(String(cString: strerror(errno))) }
+    }
+
+    public func reclaimDisk(for id: UUID, progress: @Sendable (Double) -> Void = { _ in },
+                            isCancelled: @Sendable () -> Bool = { false }) throws -> DiskReclamation {
+        let location = location(for: id)
+        let lease = try GuestRuntimeLease(directory: location.directory)
+        defer { withExtendedLifetime(lease) {} }
+        return try SparseDisk.reclaimZeroBlocks(at: location.disk, progress: progress, isCancelled: isCancelled)
     }
     private func encode(_ record: VirtualMachineRecord) throws -> Data {
         let encoder = JSONEncoder()

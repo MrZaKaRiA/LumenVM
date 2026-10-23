@@ -9,6 +9,9 @@ final class LibraryModel: ObservableObject {
     @Published var machines: [VirtualMachineRecord] = []
     @Published var selectedID: UUID?
     @Published var errorMessage: String?
+    @Published private(set) var reclaimingID: UUID?
+    @Published private(set) var reclaimProgress: Double = 0
+    private var reclaimWorker: Task<DiskReclamation, Error>?
     let libraryURL: URL
     let hostResources = HostResources.current
     var hostMemoryGiB: Int { hostResources.memoryGiB }
@@ -69,7 +72,8 @@ final class LibraryModel: ObservableObject {
             refreshUsage()
         } catch { errorMessage = error.localizedDescription }
         usageTimer = Timer.publish(every: 8, on: .main, in: .common).autoconnect().sink { [weak self] _ in
-            // Disk allocation only grows while a guest runs; create/delete/stop refresh explicitly.
+            // Allocation can grow or shrink (TRIM) while a guest runs, even while
+            // its separate app is frontmost. Avoid polling an idle library.
             guard let self, self.machines.contains(where: { self.state(for: $0.id).isActive }) else { return }
             self.refreshUsage()
         }
@@ -100,7 +104,7 @@ final class LibraryModel: ObservableObject {
         if pending.contains(id) { return .starting }
         return nativeProcesses[id]?.state ?? appleEngines[id]?.state ?? qemuEngines[id]?.state ?? .stopped
     }
-    func allocatedBytes(for id: UUID) -> Int64 { usage[id] ?? 0 }
+    func allocatedBytes(for id: UUID) -> Int64? { usage[id] }
     func progress(for id: UUID) -> Double { nativeProcesses[id]?.progress ?? appleEngines[id]?.progress ?? 0 }
 
     func create(_ record: VirtualMachineRecord) async throws {
@@ -199,6 +203,7 @@ final class LibraryModel: ObservableObject {
     }
 
     func start(_ record: VirtualMachineRecord, bootInstaller: Bool = false) {
+        guard reclaimingID != record.id else { errorMessage = "Wait for disk reclamation to finish or cancel it before starting this VM."; return }
         guard !isDemo else { errorMessage = "This is a visual preview. Open Lumen normally to create and run your own machines."; return }
         selectedID = record.id
         if nativeProcesses[record.id]?.isProcessRunning == true && !state(for: record.id).isActive {
@@ -619,10 +624,84 @@ final class LibraryModel: ObservableObject {
 
     private func refreshUsage() {
         guard let library else { return }
-        let latest = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, (try? SparseDisk.usage(at: library.location(for: $0.id).disk).allocatedBytes) ?? 0) })
+        // A failed stat is unknown, not zero: never make an inaccessible image
+        // look like successful reclamation or include it in a complete total.
+        let latest = Dictionary(uniqueKeysWithValues: machines.compactMap { machine -> (UUID, Int64)? in
+            guard let bytes = try? SparseDisk.usage(at: library.location(for: machine.id).disk).allocatedBytes else { return nil }
+            return (machine.id, bytes)
+        })
         guard latest != usage else { return }
         usage = latest
         objectWillChange.send()
+    }
+
+    func canReclaimDisk(_ record: VirtualMachineRecord) -> Bool {
+        !isDemo && !isGuestProcess && reclaimingID == nil && !state(for: record.id).isActive
+            && nativeProcesses[record.id]?.isProcessRunning != true && qemuEngines[record.id]?.isProcessRunning != true
+    }
+
+    func showStorageInformation(_ record: VirtualMachineRecord) {
+        refreshUsage()
+        let allocated = allocatedBytes(for: record.id).map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "Unavailable (the disk image could not be inspected)"
+        let trim = record.guest == .windows
+            ? "The QEMU backend requests discard/TRIM. That setting alone does not confirm reclaimed space."
+            : "TRIM depends on the guest and Apple's storage backend; Lumen does not infer successful reclamation from a setting."
+        showStorageMessage("Storage for \(record.name)", "Guest capacity: \(record.diskGiB) GiB\nAllocated disk-image blocks on the Mac: \(allocated)\n\nHost allocation refreshes every 8 seconds while a VM is active. This counts disk-image blocks, excluding firmware, tools, other VM files and APFS snapshots.\n\n\(trim)\n\nBefore reclaiming, run sudo fstrim -av in Linux, or use Optimize Drives in Windows, then shut down the VM. Reclaim Disk Space releases only blocks already containing zeroes; it preserves disk contents and capacity. Deleted nonzero data cannot be identified by this scan.")
+    }
+
+    func requestDiskReclamation(_ record: VirtualMachineRecord) {
+        guard canReclaimDisk(record) else { errorMessage = "Shut down this VM and finish any disk reclamation before reclaiming space."; return }
+        let alert = NSAlert()
+        alert.messageText = "Reclaim disk space for \(record.name)?"
+        alert.informativeText = "This scans the stopped disk and releases all-zero blocks without changing its contents or capacity. For best results, run TRIM inside the guest before shutting it down. Deleting files alone may leave nonzero blocks that this scan cannot reclaim.\n\nThe scan uses no second disk copy and can be cancelled."
+        alert.addButton(withTitle: "Reclaim Disk Space")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let library, canReclaimDisk(record) else { return }
+        let root = library.root, id = record.id
+        reclaimProgress = 0
+        reclaimingID = id
+        let reportProgress: @Sendable (Double) -> Void = { [weak self] value in
+            guard let model = self else { return }
+            Task { @MainActor in
+                guard model.reclaimingID == id else { return }
+                model.reclaimProgress = value
+            }
+        }
+        let worker = Task.detached(priority: .utility) {
+            try MachineLibrary(root: root).reclaimDisk(for: id, progress: reportProgress,
+                                                    isCancelled: { Task<Never, Never>.isCancelled })
+        }
+        reclaimWorker = worker
+        Task {
+            defer { reclaimWorker = nil; reclaimingID = nil; refreshUsage() }
+            do {
+                let result = try await worker.value
+                refreshUsage()
+                let before = ByteCountFormatter.string(fromByteCount: result.before.allocatedBytes, countStyle: .file)
+                let after = ByteCountFormatter.string(fromByteCount: result.after.allocatedBytes, countStyle: .file)
+                let freed = ByteCountFormatter.string(fromByteCount: result.reclaimedBytes, countStyle: .file)
+                let detail = result.reclaimedBytes > 0
+                    ? "Measured disk-image allocation decreased by \(freed). APFS snapshots or other copies may still retain blocks on the host volume."
+                    : "No additional disk-image blocks were reclaimed. TRIM support alone does not confirm reclaimed space. Deleted files may still contain nonzero data; this scan preserves it."
+                showStorageMessage(result.reclaimedBytes > 0 ? "Disk space reclaimed" : "No additional space reclaimed",
+                    "Allocated before: \(before)\nAllocated after: \(after)\nGuest capacity: \(record.diskGiB) GiB (unchanged)\n\n\(detail)")
+            } catch is CancellationError {
+                showStorageMessage("Reclamation cancelled", "Disk contents and guest capacity are preserved. Completed block releases are kept; host usage will refresh now.")
+            } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func cancelDiskReclamation() { reclaimWorker?.cancel() }
+
+    private func showStorageMessage(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        if let window = NSApp.windows.first(where: { $0.title == "Lumen" && $0.isVisible && $0.attachedSheet == nil }) {
+            alert.beginSheetModal(for: window)
+        } else { alert.runModal() }
     }
 
     // MARK: - Sleep / Wake Observers
