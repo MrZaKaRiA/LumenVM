@@ -1,12 +1,12 @@
-# LumensVM
+# LumenVM
 
 **Lumen — native virtual machines for Apple Silicon.**
 
-[![Downloads](https://img.shields.io/github/downloads/MrZaKaRiA/LumensVM/total)](https://github.com/MrZaKaRiA/LumensVM/releases) [![Latest release](https://img.shields.io/github/v/release/MrZaKaRiA/LumensVM)](https://github.com/MrZaKaRiA/LumensVM/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/MrZaKaRiA/LumenVM/total)](https://github.com/MrZaKaRiA/LumenVM/releases) [![Latest release](https://img.shields.io/github/v/release/MrZaKaRiA/LumenVM)](https://github.com/MrZaKaRiA/LumenVM/releases/latest)
 
 A SwiftUI app for running macOS, ARM64 Linux and experimental Windows 11 ARM64 guests. A translucent machine library, separate VM windows and disks that grow as you use them make virtual machines feel at home on your Mac.
 
-[Release v27.2.0](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.2.0) · [User guide](docs/user-guide.md) · [Compatibility](docs/compatibility.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
+[Release v27.2.0](https://github.com/MrZaKaRiA/LumenVM/releases/tag/v27.2.0) · [User guide](docs/user-guide.md) · [Compatibility](docs/compatibility.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
 <p align="center"><img src="assets/lumen_ui.png" alt="Lumen's native macOS virtual machine library, shown with demo machines" width="920"></p>
 
@@ -82,7 +82,7 @@ See [storage accounting and reclamation](docs/storage-reclamation.md) for exact 
 
 ## Get v27.2.0
 
-v27.2.0 is a **source release**. Download the [release](https://github.com/MrZaKaRiA/LumensVM/releases/tag/v27.2.0), or clone the repository, then build on an Apple Silicon Mac. A notarized standalone installer is not included.
+v27.2.0 is a **source release**. Download the [release](https://github.com/MrZaKaRiA/LumenVM/releases/tag/v27.2.0), or clone the repository, then build on an Apple Silicon Mac. A notarized standalone installer is not included.
 
 ### Requirements
 
@@ -93,8 +93,8 @@ v27.2.0 is a **source release**. Download the [release](https://github.com/MrZaK
 - The wizard's per-VM minimums are 4 GiB RAM / 64 GiB guest disk capacity for macOS and Windows, and 2 GiB / 16 GiB for Linux. The selected OS/desktop may need more. Disk capacity is a logical limit, not upfront SSD allocation.
 
 ```sh
-git clone https://github.com/MrZaKaRiA/LumensVM.git
-cd LumensVM
+git clone https://github.com/MrZaKaRiA/LumenVM.git
+cd LumenVM
 git checkout v27.2.0
 brew install qemu swtpm python@3.14 sevenzip
 bash scripts/build.sh
@@ -133,7 +133,7 @@ The latest local validation passed 48 core tests and the display-redraw regressi
 - [Feature audit](docs/feature-audit.md) and [Windows 3D status](docs/windows-3d-integration.md): remaining engineering work.
 - [Contributing](CONTRIBUTING.md), [security reporting](SECURITY.md) and [release process](docs/releasing.md).
 
-Report reproducible bugs through [GitHub Issues](https://github.com/MrZaKaRiA/LumensVM/issues). Include host/guest versions and the relevant redacted logs; never upload VM disks, guest passwords or private shared-folder contents.
+Report reproducible bugs through [GitHub Issues](https://github.com/MrZaKaRiA/LumenVM/issues). Include host/guest versions and the relevant redacted logs; never upload VM disks, guest passwords or private shared-folder contents.
 
 ## License
 
