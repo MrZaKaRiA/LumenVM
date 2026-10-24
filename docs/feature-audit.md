@@ -1,4 +1,4 @@
-# Feature audit — 12 October 2026
+# Feature audit — updated 24 October 2026
 
 The four reference screenshots are a product target, not evidence of features implemented in Lumen. This audit covers the current source, including the newer catalog, storage, audio, host resource and Touch ID work.
 
@@ -38,7 +38,7 @@ The four reference screenshots are a product target, not evidence of features im
 | Sound / mic per VM | Independent configuration in both engines | Installed guest tests, live controls and a truthful microphone-use indicator |
 | One Dock app / crash isolation per VM | Windows has a branded QEMU process; each Apple guest has a separate signed Lumen process with an OS Dock icon, private command/status pipes and an exclusive runtime lease. Abyss start, library pause/resume and Dock reopening passed live. | Reattach after a library crash; installed macOS process-path acceptance and crash/recovery stress tests |
 | Parallels import | Not implemented | Non-destructive ARM disk conversion, identity mapping, driver replacement, encrypted disk/TPM recovery and migration fixtures |
-| Rosetta / nested virtualization | Not exposed in Lumen | Capability-gated native options, guest setup, licensing/install handling and real guest tests |
+| Rosetta / nested virtualization | Opt-in Linux settings are implemented: host Rosetta installation/share and guest binfmt registration; capability-gated nested virtualization on macOS 15+ and supported hardware. | Installed-guest acceptance for x86-64 applications, KVM workloads and lifecycle/recovery |
 | USB passthrough | Keyboard/tablet/CD only | Device picker, hotplug, ownership and disconnect handling; Windows driver verification |
 
 ## Windows driver and sharpness workflow
