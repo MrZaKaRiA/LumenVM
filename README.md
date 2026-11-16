@@ -88,6 +88,8 @@ v27.2.0 is a **source release**. Download the [release](https://github.com/MrZaK
 
 - Apple Silicon Mac with macOS 14 or later; Intel Macs are not a supported host target.
 - Current Xcode or Command Line Tools with Swift 5.9 or newer and a macOS SDK supporting the APIs used by your host.
+  - **Command Line Tools only:** the macOS 27 SDK implements SwiftUI's `@State` with the `SwiftUIMacros` compiler plugin, which ships only with Xcode. When `SDKROOT` is unset, `scripts/build.sh` detects this and builds with the newest older CLT SDK that works (for example `MacOSX26.5.sdk`), printing a note. Set `SDKROOT` to choose an SDK yourself.
+  - **Running the tests (`scripts/check.sh`) needs full Xcode**, because XCTest is not part of Command Line Tools. Without it, the script says so, still runs the display-drawing check, and exits non-zero.
 - [Homebrew](https://brew.sh/) for build/runtime dependencies.
 - Your own compatible ARM64 ISO or Apple Silicon IPSW. OS images and licenses are not included.
 - The wizard's per-VM minimums are 4 GiB RAM / 64 GiB guest disk capacity for macOS and Windows, and 2 GiB / 16 GiB for Linux. The selected OS/desktop may need more. Disk capacity is a logical limit, not upfront SSD allocation.
