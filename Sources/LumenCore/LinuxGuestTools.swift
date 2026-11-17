@@ -12,8 +12,59 @@ public enum LinuxGuestTools {
 
     public static func files(sharedFolders: Bool, rosetta: Bool = false) -> [String: String] {
         ["install.sh": installer(sharedFolders: sharedFolders, rosetta: rosetta), "setup.sh": setupScript,
-         "session.sh": sessionScript, "runit.sh": runitScript]
+         "session.sh": sessionScript, "runit.sh": runitScript, "mount-shares.sh": mountSharesScript]
     }
+
+    /// Lumen's fstab entries are `noauto`: init systems that run `mount -a` and abort on any
+    /// error (Void/runit) must never touch a share the host may not have attached.
+    public static let lumenFstabOptions = "noauto,nofail"
+    public static let rosettaFstabOptions = "ro,noauto,nofail"
+
+    /// Rewrites old Lumen fstab lines to `noauto` (keeping one backup) and appends missing ones.
+    /// `LUMEN_FSTAB` overrides the path so the snippet can be tested; it sets `failed=1` on error.
+    public static func fstabSnippet(rosetta: Bool) -> String {
+        #"""
+        fstab=${LUMEN_FSTAB:-/etc/fstab}
+        [ -e "$fstab" ] || : > "$fstab" || failed=1
+        if awk '($1 == "lumen" && $2 == "/mnt/lumen" && $4 !~ /noauto/) || ($1 == "\#(rosettaTag)" && $2 == "\#(rosettaMountPoint)" && $4 !~ /noauto/) {found=1} END {exit !found}' "$fstab"; then
+          [ -e "$fstab.lumen-bak" ] || cp -p "$fstab" "$fstab.lumen-bak" || failed=1
+          if lumen_tmp=$(mktemp "$fstab.lumen.XXXXXX"); then
+            awk '$1 == "lumen" && $2 == "/mnt/lumen" && $4 !~ /noauto/ {print "lumen /mnt/lumen virtiofs \#(lumenFstabOptions) 0 0"; next}
+                 $1 == "\#(rosettaTag)" && $2 == "\#(rosettaMountPoint)" && $4 !~ /noauto/ {print "\#(rosettaTag) \#(rosettaMountPoint) virtiofs \#(rosettaFstabOptions) 0 0"; next}
+                 {print}' "$fstab" > "$lumen_tmp" && cat "$lumen_tmp" > "$fstab" || failed=1
+            rm -f "$lumen_tmp"
+          else
+            failed=1
+          fi
+        fi
+        if ! awk '$2 == "/mnt/lumen" {found=1} END {exit !found}' "$fstab"; then
+          printf '\nlumen /mnt/lumen virtiofs \#(lumenFstabOptions) 0 0\n' >> "$fstab" || failed=1
+        fi
+        """# + (rosetta ? #"""
+
+        if ! awk '$2 == "\#(rosettaMountPoint)" {found=1} END {exit !found}' "$fstab"; then
+          printf '\n\#(rosettaTag) \#(rosettaMountPoint) virtiofs \#(rosettaFstabOptions) 0 0\n' >> "$fstab" || failed=1
+        fi
+        """# : "")
+    }
+
+    /// Runs at boot (systemd unit or runit rc.local). Mounts only shares the host attached,
+    /// and never fails: a missing tag must not stop the guest from booting.
+    public static let mountSharesScript = #"""
+    #!/bin/sh
+    # Lumen: mount host shares at boot when present. Errors are ignored on purpose.
+    fstab=${LUMEN_FSTAB:-/etc/fstab}
+    modprobe virtiofs 2>/dev/null || true
+    for point in /mnt/lumen \#(rosettaMountPoint); do
+      awk -v p="$point" '$2 == p && $3 == "virtiofs" {found=1} END {exit !found}' "$fstab" 2>/dev/null || continue
+      mountpoint -q "$point" 2>/dev/null || mount "$point" 2>/dev/null || true
+    done
+    if [ -x \#(rosettaMountPoint)/rosetta ] && [ ! -e /proc/sys/fs/binfmt_misc/rosetta ]; then
+      mountpoint -q /proc/sys/fs/binfmt_misc 2>/dev/null || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true
+      printf '%s' '\#(rosettaBinfmt)' > /proc/sys/fs/binfmt_misc/register 2>/dev/null || true
+    fi
+    exit 0
+    """#
 
     public static let setupScript = #"""
     #!/bin/bash
@@ -74,6 +125,7 @@ public enum LinuxGuestTools {
         fi
         install -d -m 755 /usr/local/lib/lumen /etc/xdg/autostart || exit 1
         install -m 755 session.sh /usr/local/lib/lumen/session.sh || exit 1
+        install -m 755 mount-shares.sh /usr/local/lib/lumen/mount-shares.sh || exit 1
         cat > /etc/xdg/autostart/lumen-guest-tools.desktop <<'DESKTOP'
         [Desktop Entry]
         Type=Application
@@ -83,6 +135,21 @@ public enum LinuxGuestTools {
         X-GNOME-Autostart-enabled=true
         DESKTOP
         if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+          cat > /etc/systemd/system/lumen-mounts.service <<'UNIT'
+        [Unit]
+        Description=Mount Lumen host shares when present
+        After=local-fs.target
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/bin/sh /usr/local/lib/lumen/mount-shares.sh
+
+        [Install]
+        WantedBy=multi-user.target
+        UNIT
+          systemctl daemon-reload || failed=1
+          systemctl enable lumen-mounts.service || failed=1
           systemctl start dbus.service || failed=1
           # Distros use either a socket-activated daemon or a directly started unit.
           if systemctl cat spice-vdagentd.socket >/dev/null 2>&1; then
@@ -96,6 +163,13 @@ public enum LinuxGuestTools {
           fi
         elif [ -d /etc/sv ] && [ -d /var/service ] && command -v sv >/dev/null; then
           bash ./runit.sh /etc/sv /var/service dbus spice-vdagentd || failed=1
+          # runit has no mount unit. rc.local runs at the end of stage 1; the hook never fails.
+          if ! grep -Fq '/usr/local/lib/lumen/mount-shares.sh' /etc/rc.local 2>/dev/null; then
+            if [ ! -e /etc/rc.local ]; then
+              printf '#!/bin/sh\n' > /etc/rc.local && chmod 755 /etc/rc.local || failed=1
+            fi
+            printf '\n%s\n' '[ -r /usr/local/lib/lumen/mount-shares.sh ] && /bin/sh /usr/local/lib/lumen/mount-shares.sh >/dev/null 2>&1 || true # Lumen guest tools' >> /etc/rc.local || failed=1
+          fi
         else
           echo 'No supported running service manager found. Start dbus and spice-vdagentd with your init system.' >&2
           failed=1
@@ -104,12 +178,11 @@ public enum LinuxGuestTools {
           echo 'Clipboard port is missing. Enable Shared Clipboard in Lumen and fully shut down/start this VM.' >&2
           failed=1
         fi
-        # Keep the mount ready for folders selected later in Lumen. With no host
-        # share attached, nofail allows an ordinary boot without waiting for it.
+        # Keep the mount ready for folders selected later in Lumen. The entries are noauto so
+        # `mount -a` (which aborts boot on Void/runit) never touches them; mount-shares.sh
+        # mounts them at boot only when the host attached the share.
         mkdir -p /mnt/lumen
-        if ! awk '$2 == "/mnt/lumen" {found=1} END {exit !found}' /etc/fstab; then
-          printf '\nlumen /mnt/lumen virtiofs defaults,nofail 0 0\n' >> /etc/fstab || failed=1
-        fi
+        \#(fstabSnippet(rosetta: rosetta))
         if [ '\#(sharedFolders ? "1" : "0")' = 1 ]; then
           if ! mountpoint -q /mnt/lumen; then
             modprobe virtiofs 2>/dev/null || true
@@ -127,9 +200,6 @@ public enum LinuxGuestTools {
         if [ '\#(rosetta ? "1" : "0")' = 1 ]; then
           # Rosetta runs x86_64 Linux binaries. fstab and binfmt.d keep it across reboots.
           mkdir -p \#(rosettaMountPoint)
-          if ! awk '$2 == "\#(rosettaMountPoint)" {found=1} END {exit !found}' /etc/fstab; then
-            printf '\n\#(rosettaTag) \#(rosettaMountPoint) virtiofs ro,nofail 0 0\n' >> /etc/fstab || failed=1
-          fi
           mountpoint -q \#(rosettaMountPoint) || mount -t virtiofs \#(rosettaTag) \#(rosettaMountPoint) || failed=1
           if [ -x \#(rosettaMountPoint)/rosetta ]; then
             mountpoint -q /proc/sys/fs/binfmt_misc || mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || failed=1

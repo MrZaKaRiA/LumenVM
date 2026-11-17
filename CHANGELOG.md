@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Linux guest tools no longer break boot on distributions that run `mount -a` and stop on any error (Void/Abyss runit). The `/mnt/lumen` and Rosetta fstab entries are now `noauto,nofail`, and a small boot hook (systemd unit or `/etc/rc.local` on runit) mounts them only when the host attached the share. Re-running **Install / Repair Linux Guest Tools** repairs existing `defaults,nofail` entries (backup: `/etc/fstab.lumen-bak`).
+
 ### External disks for Windows
 
 - Connect a whole USB stick, SD card or external drive to a running Windows (QEMU) VM as a removable USB drive, read-write or read-only. A small non-activating panel offers newly plugged-in disks to running Windows VMs; the library **Devices** menu, the VM row menu and the Windows window's **Devices → External Disks** menu connect, disconnect-and-return or disconnect-and-eject.
