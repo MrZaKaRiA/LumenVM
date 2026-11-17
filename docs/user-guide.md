@@ -73,10 +73,28 @@ Windows runs as **Lumen VM**, with its VM name in the Dock. The temporary applic
 
 - **Virtual Machine:** pause/resume, Ctrl-Alt-Delete, immediate restart, shutdown/force stop, start/shut down all, Finder/log access and CPU speed limits.
 - **View:** native full screen, fit-to-window, optional smoothing, Windows display settings and PNG screenshots. Smoothing stretched pixels does not create Retina detail.
-- **Devices:** driver installation, shared-folder connection, Device Manager, network settings, keyboard/mouse release and separate installer/driver/setup-tool disc menus. Eject/insert affects this running session; use library settings to change the saved installer reference. Locked media reports an error rather than forcing eject.
+- **Devices:** driver installation, shared-folder connection, Device Manager, network settings, keyboard/mouse release, separate installer/driver/setup-tool disc menus and **External Disks** (connect, connect read-only, disconnect and return, disconnect and eject). Eject/insert affects this running session; use library settings to change the saved installer reference. Locked media reports an error rather than forcing eject.
 - **Help:** bundled driver/Retina guidance, compatibility information and engine documentation.
 
 Driver staging during new Windows Setup remains automatic. Menu actions that open Windows tools require a logged-in desktop; Lumen cannot detect login readiness or bypass UAC. Driver success is reported by Windows, not inferred from typing the launcher command.
+
+## External disks in Windows
+
+A running or paused Windows VM can use a whole USB stick, SD/memory card or external drive as if it were plugged into a Windows PC (a removable USB drive). Typical uses: format it as NTFS or exFAT, write a Windows installer to it, or copy files that macOS cannot write.
+
+**Connect.** Plug the disk into the Mac while a Windows VM is running. A small Lumen panel appears in the top-right corner: choose **Connect to <VM name>** (optionally tick **Read-only** first), or **Use on This Mac** to leave it with macOS. You can also connect from the library's **Devices** menu, from the VM row's **⋯ → External disks** menu, or from the Windows window's **Devices → External Disks** menu. Lumen confirms the disk, its size and the VM, unmounts it from the Mac, and macOS asks for an **administrator password** to give Lumen access to the raw disk. Windows then shows a new removable drive.
+
+**While connected,** only Windows uses the disk. macOS will not mount it, even after Windows reformats it. The same disk cannot be connected to two VMs.
+
+**Disconnect.** First eject it **inside Windows** (taskbar **Safely Remove Hardware and Eject Media**, or **Eject** in File Explorer) so Windows finishes writing. Then choose **Disconnect … and Return to This Mac** (macOS mounts it again if it can read the format) or **Disconnect and Eject** (unplug it afterwards) from any of the menus above. Shutting down the VM also returns the disk to macOS. Unplugging a disk while Windows uses it disconnects it from Windows and shows a warning; unfinished writes can be lost.
+
+**Formats.** macOS can read NTFS but cannot write it natively. Do all writing to NTFS drives in Windows. FAT32 and exFAT work on both systems.
+
+**Read-only** connections let Windows read the disk but refuse every write, which is useful for inspecting a disk you do not want changed.
+
+Only removable or external whole disks are offered. Lumen never offers the Mac's internal or startup disk, APFS containers, or the disk holding the Lumen library, and it re-checks each disk with `diskutil` immediately before connecting. Linux and macOS guests and general USB devices (phones, cameras, security keys, other non-storage devices) are not supported yet.
+
+Testing without hardware: launching Lumen with `LUMEN_ALLOW_DISK_IMAGE_DEVICES=1` also offers disk images attached with `hdiutil attach -nomount`.
 
 ## Installer selection and Windows folders
 

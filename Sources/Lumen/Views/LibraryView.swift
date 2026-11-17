@@ -390,6 +390,11 @@ private struct MachineRow: View {
                         Button("Enable Retina display after installing drivers…", systemImage: "display") { model.enableWindowsRetinaDisplay(machine) }
                             .disabled(state.isActive && state != .running)
                     }
+                    if state == .running || state == .paused {
+                        Menu("External disks", systemImage: "externaldrive") {
+                            ExternalDiskMenuContent(model: model, machine: machine)
+                        }
+                    }
                 }
                 if machine.guest.usesAppleVirtualization && !machine.guest.isMacOS {
                     Button("Install / repair Linux guest tools…", systemImage: "shippingbox") { model.installLinuxTools(machine) }

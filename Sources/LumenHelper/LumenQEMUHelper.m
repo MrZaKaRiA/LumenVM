@@ -11,6 +11,8 @@ static NSString *envString(const char *key) {
 @interface LumenMenuController : NSObject <NSMenuItemValidation, NSMenuDelegate>
 @property(nonatomic, copy) NSDictionary *status;
 @property(nonatomic, retain) id executionActivity;
+@property(nonatomic, assign) NSMenu *externalDisksMenu;
+@property(nonatomic, copy) NSArray *builtExternalDisks;
 - (void)installMenus;
 - (void)performAction:(NSMenuItem *)item;
 - (void)sendAction:(NSString *)action;
@@ -69,6 +71,41 @@ static NSUInteger stableFramebufferDrawCount;
 }
 - (void)menuWillOpen:(NSMenu *)menu { [self sendAction:@"refresh"]; }
 
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    if (menu == self.externalDisksMenu) [self rebuildExternalDisksMenu];
+}
+
+// Rebuilt from the app's last status. Each item only names a disk the app published; the app
+// re-validates every command against that list before acting.
+- (void)rebuildExternalDisksMenu {
+    NSMenu *menu = self.externalDisksMenu;
+    if (!menu) return;
+    NSArray *disks = self.status[@"externalDisks"];
+    if (![disks isKindOfClass:NSArray.class]) disks = @[];
+    if (self.builtExternalDisks && [self.builtExternalDisks isEqual:disks]) return;
+    self.builtExternalDisks = disks;
+    [menu removeAllItems];
+    for (NSDictionary *disk in disks) {
+        if (![disk isKindOfClass:NSDictionary.class]) continue;
+        NSString *identifier = disk[@"id"];
+        NSString *title = disk[@"title"];
+        if (![identifier isKindOfClass:NSString.class] || ![title isKindOfClass:NSString.class]) continue;
+        NSMenu *child = [self submenu:title to:menu];
+        if ([disk[@"attachedHere"] boolValue]) {
+            [self add:@"Disconnect and Return to Mac…" command:[@"disk-return:" stringByAppendingString:identifier] to:child key:@""];
+            [self add:@"Disconnect and Eject…" command:[@"disk-eject:" stringByAppendingString:identifier] to:child key:@""];
+        } else if ([disk[@"attachedElsewhere"] boolValue]) {
+            [child addItemWithTitle:@"In Use by Another Virtual Machine" action:nil keyEquivalent:@""];
+        } else {
+            [self add:@"Connect to This Virtual Machine…" command:[@"disk-attach:" stringByAppendingString:identifier] to:child key:@""];
+            [self add:@"Connect Read-Only…" command:[@"disk-attach-ro:" stringByAppendingString:identifier] to:child key:@""];
+        }
+    }
+    if (menu.numberOfItems == 0) [menu addItemWithTitle:@"No External Disks" action:nil keyEquivalent:@""];
+    [menu addItem:NSMenuItem.separatorItem];
+    [menu addItemWithTitle:@"Eject a disk in Windows before disconnecting it." action:nil keyEquivalent:@""];
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     NSString *command = item.representedObject;
     if ([command isEqual:@"toggle-fullscreen"]) {
@@ -94,6 +131,7 @@ static NSUInteger stableFramebufferDrawCount;
         return (running || paused) && [self.status[@"media"][command] boolValue];
     }
     if ([command hasPrefix:@"mount-"] || [command isEqual:@"change-installer"]) return running || paused;
+    if ([command hasPrefix:@"disk-"]) return running || paused;
     return YES;
 }
 
@@ -144,6 +182,7 @@ static NSUInteger stableFramebufferDrawCount;
         [[NSProcessInfo processInfo] endActivity:self.executionActivity];
         self.executionActivity = nil;
     }
+    [self rebuildExternalDisksMenu];
     [self writeMenuReport];
 }
 
@@ -237,6 +276,9 @@ static NSUInteger stableFramebufferDrawCount;
     NSMenu *tools = [self submenu:@"Lumen Setup Tools Disc" to:devices];
     [self add:@"Insert Setup Tools" command:@"mount-setup" to:tools key:@""];
     [self add:@"Eject Setup Tools" command:@"eject-setup" to:tools key:@""];
+    [devices addItem:NSMenuItem.separatorItem];
+    self.externalDisksMenu = [self submenu:@"External Disks" to:devices];
+    [self rebuildExternalDisksMenu];
 
     NSMenuItem *speed = [main itemWithTitle:@"Speed"];
     if (speed) {

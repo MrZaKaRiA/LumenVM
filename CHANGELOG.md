@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### External disks for Windows
+
+- Connect a whole USB stick, SD card or external drive to a running Windows (QEMU) VM as a removable USB drive, read-write or read-only. A small non-activating panel offers newly plugged-in disks to running Windows VMs; the library **Devices** menu, the VM row menu and the Windows window's **Devices → External Disks** menu connect, disconnect-and-return or disconnect-and-eject.
+- DiskArbitration-based monitor lists only removable/external whole disks, never the startup disk, APFS containers or the disk holding the library, and re-checks each disk with `diskutil` before connecting. A disk can belong to only one VM at a time.
+- While a VM owns a disk, macOS mount requests for it are refused, so Windows can format it without macOS grabbing the new volume. Unplugging an in-use disk detaches it from Windows and warns about possible data loss.
+- Window-menu disk commands are parsed strictly (valid whole-disk name, and only disks Lumen published to that VM's menu) and always show a confirmation.
+- Validation: unit tests for disk-name validation, eligibility, diskutil/DiskArbitration parsing, menu-command parsing and QMP builders; the no-guest QMP hot-plug check passes with a disk image. Not yet validated with physical hardware and an installed Windows guest. Linux/macOS guests and generic USB device passthrough are not implemented.
+
 ## v27.2.0
 
 Source release for Apple Silicon. Adds measured sparse-disk reclamation, clearer storage accounting and disposable Linux TRIM validation. Windows remains experimental; the new reclaim path is not validated on Windows/NTFS.

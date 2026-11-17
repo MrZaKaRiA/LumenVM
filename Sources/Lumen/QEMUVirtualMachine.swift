@@ -58,6 +58,12 @@ final class QEMUVirtualMachine: ObservableObject {
     var hostDiskOperations: Set<String> = []
     var onLibraryAction: ((String) -> Void)?
     var onFilesDrop: (([URL]) -> Void)?
+    /// External disks to list in this VM window's Devices menu, supplied by LibraryModel.
+    var externalDiskItems: (() -> [ExternalDiskMenuItem])?
+    /// A validated disk command from this VM window's menu.
+    var onDiskMenuAction: ((DiskMenuAction) -> Void)?
+    /// BSD names most recently published to this VM's menu; menu commands must name one of them.
+    private var publishedDiskIDs: Set<String> = []
 
     static var tpmExecutableURL: URL? {
         ["/opt/homebrew/bin/swtpm", "/usr/local/bin/swtpm"].first {
@@ -314,12 +320,21 @@ final class QEMUVirtualMachine: ObservableObject {
                 media["eject-\(role)"] = block(for: role, in: blocks)?["inserted"] != nil
             }
         }
+        let disks = externalDiskItems?() ?? []
+        publishedDiskIDs = Set(disks.map(\.id))
         DistributedNotificationCenter.default().postNotificationName(
             Notification.Name("app.lumen.status.\(controlToken)"), object: nil,
             userInfo: ["state": state.rawValue, "typing": isSendingGuestCommand, "media": media,
                        "compatibilityDisplay": usesCompatibilityDisplay,
                        "canReceiveFiles": record.sharedFolders.contains { !$0.readOnly },
-                       "sharedFolders": managedSharing != nil && !record.sharedFolders.isEmpty], deliverImmediately: true)
+                       "sharedFolders": managedSharing != nil && !record.sharedFolders.isEmpty,
+                       "externalDisks": disks.map(\.dictionary)], deliverImmediately: true)
+    }
+
+    /// Republishes the menu status, for example after the list of external disks changed.
+    func refreshMenuStatus() {
+        guard isProcessRunning else { return }
+        Task { await publishMenuStatus() }
     }
 
     /// All removable drives have explicit qdev identities. Modern QEMU's legacy device field is blank.
@@ -476,7 +491,12 @@ final class QEMUVirtualMachine: ObservableObject {
             if let url = Bundle.main.url(forResource: name, withExtension: "md", subdirectory: "Documentation") { NSWorkspace.shared.open(url) }
         case "engine-docs": NSWorkspace.shared.open(URL(string: "https://www.qemu.org/docs/master/")!)
         case "library", "settings", "start-all", "stop-all", "enable-retina": onLibraryAction?(action)
-        default: break // Never execute arbitrary commands received through the menu bridge.
+        default:
+            // Disk commands are parsed strictly against the disks last shown in this VM's menu.
+            // Never execute arbitrary commands received through the menu bridge.
+            if let diskAction = DiskMenuAction.parse(action, published: publishedDiskIDs) {
+                onDiskMenuAction?(diskAction)
+            }
         }
     }
 

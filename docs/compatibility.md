@@ -24,6 +24,8 @@ Older records default to Compatibility display to keep the screen visible while 
 
 Full-screen uses macOS auto-hide menu behavior. Top-edge pointer movement was verified to reveal the native menu and window controls, and **View → Exit Full Screen** passed. **Control–Command–F** toggles full-screen, and **Control–Option–Escape** exits; these host shortcuts are handled before guest key capture.
 
+External disks: a running Windows VM can use a whole USB stick, SD card or external drive as a removable USB drive (**Devices → External Disks**, the library **Devices** menu, or the panel shown when a disk is plugged in). macOS asks for an administrator password to open the raw disk, unmounts it, and does not mount it again while Windows owns it. Eject the drive in Windows before disconnecting it. This has been validated with a disk image at the QEMU monitor level and by unit tests, but not yet with physical hardware and an installed Windows guest. Linux and macOS guests and generic (non-storage) USB passthrough are not implemented.
+
 Windows uses QEMU user-mode NAT. Optional TCP/UDP forwarding listens only on Mac localhost. Selected Windows folders use Lumen’s private, authenticated and signed SMB2 server, forwarded only into that guest at `10.0.2.4:445`. Multiple folders and per-folder read-only enforcement are supported. macOS File Sharing, LAN publication and Mac account passwords are not used. Homebrew Python 3.14 and the bundled hash-pinned runtime are required. New Setup registers the user-session connection helper; existing guests can run Tools repair once or connect from the Devices menu. Sound and microphone are separate device settings. Installed guest audio and network behavior still need acceptance testing.
 
 ## Native integration

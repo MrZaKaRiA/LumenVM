@@ -103,6 +103,13 @@ struct LumenApp: App {
                     Toggle("Start Machines When Lumen Opens", isOn: $autoStartMachines)
                 }
             }
+            if !model.isGuestProcess {
+                CommandMenu("Devices") {
+                    Section("External Disks") {
+                        ExternalDiskMenuContent(model: model)
+                    }
+                }
+            }
         }
     }
 }

@@ -26,7 +26,15 @@ final class LibraryModel: ObservableObject {
     private var guestLease: GuestRuntimeLease?
     private var guestBridge: NativeGuestBridge?
     private var guestRuntimeStarted = false
-    private var qemuEngines: [UUID: QEMUVirtualMachine] = [:]
+    private(set) var qemuEngines: [UUID: QEMUVirtualMachine] = [:]
+    // External disks (LibraryModel+Devices.swift).
+    var deviceMonitor: DeviceMonitor?
+    var deviceCancellables: [AnyCancellable] = []
+    var diskObservations: [UUID: AnyCancellable] = [:]
+    /// Whole disks with an attach in progress; their volumes must not be mounted by macOS.
+    var attachingDisks: Set<String> = []
+    var diskOperationsInFlight: Set<String> = []
+    var deviceChooser: DeviceChooserController?
     private var observations: [UUID: AnyCancellable] = [:]
     private var errorObservations: [UUID: AnyCancellable] = [:]
     private var guestWindows: [UUID: NSWindow] = [:]
@@ -87,6 +95,7 @@ final class LibraryModel: ObservableObject {
         guestClipboardFocusObservation = NotificationCenter.default.publisher(for: GuestVirtualMachineView.focusChanged).sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        startDeviceMonitoring()
     }
 
     var focusedGuestClipboardView: GuestVirtualMachineView? {
@@ -272,6 +281,7 @@ final class LibraryModel: ObservableObject {
         } else if record.guest == .windows {
             let engine = QEMUVirtualMachine(record: record, location: location)
             engine.onFilesDrop = { [weak self] urls in self?.sendFiles(record, sources: urls) }
+            wireExternalDisks(engine, record: record)
             engine.onLibraryAction = { [weak self] action in
                 guard let self else { return }
                 switch action {
