@@ -8,11 +8,11 @@ mkdir -p "$LUMEN_TEST_ROOT"
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/ModuleCache"
 tests_status=0
-if lumen_has_xctest; then
-  swift test --disable-sandbox --build-system native --cache-path "$PWD/.build/cache" --config-path "$PWD/.build/config" --security-path "$PWD/.build/security" || tests_status=$?
+if lumen_test_flags; then
+  swift test --disable-sandbox --build-system native --cache-path "$PWD/.build/cache" --config-path "$PWD/.build/config" --security-path "$PWD/.build/security" ${LUMEN_TEST_FLAGS[@]+"${LUMEN_TEST_FLAGS[@]}"} || tests_status=$?
 else
-  echo "error: Swift tests need full Xcode: XCTest is not included with Command Line Tools ($(lumen_developer_dir))." >&2
-  echo "error: Install Xcode in /Applications (used automatically) or set DEVELOPER_DIR to it." >&2
+  echo "error: Swift Testing is not available: Testing.framework not found in $(lumen_developer_dir)." >&2
+  echo "error: Install Xcode or recent Command Line Tools, or set DEVELOPER_DIR." >&2
   echo "Skipping swift test; still running the display-drawing check." >&2
   tests_status=1
 fi
