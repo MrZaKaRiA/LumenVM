@@ -13,6 +13,8 @@ import UniformTypeIdentifiers
 final class QEMUVirtualMachine: ObservableObject {
     @Published private(set) var state: VMRuntimeState = .stopped
     @Published private(set) var errorMessage: String?
+    /// Host disks presented to the guest as USB drives. Mutated only by QEMUDevices.swift.
+    @Published var attachedDisks: [AttachedHostDisk] = []
 
     let record: VirtualMachineRecord
     let location: VMLocation
@@ -49,6 +51,11 @@ final class QEMUVirtualMachine: ObservableObject {
     private var menuStatusObservation: AnyCancellable?
     private var menuBridgeReady = false
     private var isSendingGuestCommand = false
+    // Host-disk hot-plug state, owned by QEMUDevices.swift.
+    var deviceRuntimeDirectory: URL?
+    var deviceMonitorSocket: QMPSocket?
+    var hostDiskExports: [String: HostDiskExport] = [:]
+    var hostDiskOperations: Set<String> = []
     var onLibraryAction: ((String) -> Void)?
     var onFilesDrop: (([URL]) -> Void)?
 
@@ -131,6 +138,7 @@ final class QEMUVirtualMachine: ObservableObject {
         let arguments: [String]
         do {
             if record.windowsTPM { try await startTPM() }
+            _ = try prepareDeviceRuntime()
             if !record.sharedFolders.isEmpty || needsAutomaticDisplaySetup {
                 guard record.networkEnabled || record.sharedFolders.isEmpty else { throw QEMUError("Enable networking to connect the selected shared folders.") }
                 var setupShare: (name: String, directory: URL)?
@@ -761,7 +769,7 @@ final class QEMUVirtualMachine: ObservableObject {
             "-nodefaults", "-display", "cocoa,zoom-to-fit=on,left-command-key=\(record.captureSystemKeys ? "on" : "off")",
             "-device", usesCompatibilityDisplay ? "ramfb" : "virtio-gpu-pci,edid=on,xres=\(record.displayWidth),yres=\(record.displayHeight)",
             "-fw_cfg", "name=opt/org.tianocore/X-GOP-Resolution,string=\(record.displayWidth)x\(record.displayHeight)",
-            "-device", "qemu-xhci,id=usb", "-device", "usb-kbd", "-device", "usb-tablet",
+            "-device", "qemu-xhci,id=usb,p2=8,p3=8", "-device", "usb-kbd", "-device", "usb-tablet",
             "-device", "virtio-balloon-pci"
         ]
         if record.networkEnabled || needsAutomaticDisplaySetup {
@@ -787,6 +795,10 @@ final class QEMUVirtualMachine: ObservableObject {
         arguments += [
             "-qmp", "stdio", "-monitor", "none", "-serial", "none"
         ]
+        if let runtime = deviceRuntimeDirectory {
+            // Second monitor, used only for host-disk hot-plug (see QEMUDevices.swift).
+            arguments += ["-qmp", "unix:\(runtime.appendingPathComponent("qmp.sock").path),server=on,wait=off"]
+        }
         for (name, path, readOnly) in [
             ("uefi-code", firmware.code, true), ("uefi-vars", firmware.variables, false),
             ("disk", location.disk, false)
@@ -1137,6 +1149,7 @@ final class QEMUVirtualMachine: ObservableObject {
     }
 
     private func cleanup() {
+        tearDownHostDevices()
         displaySetupTask?.cancel()
         displaySetupTask = nil
         if let directory = displayReceiptDirectory { try? FileManager.default.removeItem(at: directory) }
