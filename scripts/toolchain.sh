@@ -71,11 +71,20 @@ lumen_select_sdk() {
   return 1
 }
 
-# XCTest ships with Xcode; recent Command Line Tools do not include it.
-lumen_has_xctest() {
-  local dev
+# Tests use Swift Testing. Full Xcode finds it on its own. Command Line Tools ship
+# Testing.framework (and lib_TestingInterop.dylib) in non-default directories, so
+# swift test needs explicit framework search and rpath flags there.
+# Fills the LUMEN_TEST_FLAGS array; returns 1 when Swift Testing is unavailable.
+lumen_test_flags() {
+  LUMEN_TEST_FLAGS=()
+  lumen_is_command_line_tools || return 0
+  local dev frameworks lib
   dev="$(lumen_developer_dir)"
-  [ -d "$dev/Platforms/MacOSX.platform/Developer/Library/Frameworks/XCTest.framework" ] ||
-    [ -d "$dev/Library/Developer/Frameworks/XCTest.framework" ] ||
-    [ -d "$dev/Library/Frameworks/XCTest.framework" ]
+  frameworks="$dev/Library/Developer/Frameworks"
+  lib="$dev/Library/Developer/usr/lib"
+  [ -d "$frameworks/Testing.framework" ] || return 1
+  LUMEN_TEST_FLAGS=(-Xswiftc -F"$frameworks" -Xlinker -F"$frameworks"
+    -Xlinker -rpath -Xlinker "$frameworks")
+  [ -d "$lib" ] && LUMEN_TEST_FLAGS+=(-Xlinker -rpath -Xlinker "$lib")
+  return 0
 }

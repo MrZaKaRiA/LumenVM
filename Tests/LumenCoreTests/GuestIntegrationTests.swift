@@ -1,12 +1,13 @@
-import XCTest
+import Testing
+import Foundation
 @testable import LumenCore
 
-final class GuestIntegrationTests: XCTestCase {
+@Suite struct GuestIntegrationTests {
     private var testRoot: URL {
         ProcessInfo.processInfo.environment["LUMEN_TEST_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? URL(fileURLWithPath: "/private/tmp", isDirectory: true)
     }
-    func testTransferPreservesFilesAndNeverOverwritesOrAcceptsReadOnlyDestinations() throws {
+    @Test func testTransferPreservesFilesAndNeverOverwritesOrAcceptsReadOnlyDestinations() throws {
         let root = testRoot.appendingPathComponent("LumenTransfer-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
@@ -15,39 +16,39 @@ final class GuestIntegrationTests: XCTestCase {
         let file = source.appendingPathComponent("text.txt")
         try Data("guest transfer".utf8).write(to: file)
         let copied = try SharedFileTransfer.copy([file], to: SharedFolder(path: destination.path))
-        XCTAssertEqual(try Data(contentsOf: copied[0]), try Data(contentsOf: file))
+        #expect(try Data(contentsOf: copied[0]) == Data(contentsOf: file))
         try Data("changed".utf8).write(to: file)
-        XCTAssertThrowsError(try SharedFileTransfer.copy([file], to: SharedFolder(path: destination.path)))
-        XCTAssertEqual(try Data(contentsOf: copied[0]), Data("guest transfer".utf8))
-        XCTAssertEqual(try SharedFileTransfer.copy(copied, to: SharedFolder(path: destination.path)), copied)
-        XCTAssertThrowsError(try SharedFileTransfer.copy([file], to: SharedFolder(path: destination.path, readOnly: true)))
-        XCTAssertThrowsError(try SharedFileTransfer.copy([root], to: SharedFolder(path: destination.path)))
+        #expect(throws: (any Error).self) { try SharedFileTransfer.copy([file], to: SharedFolder(path: destination.path)) }
+        #expect(try Data(contentsOf: copied[0]) == Data("guest transfer".utf8))
+        #expect(try SharedFileTransfer.copy(copied, to: SharedFolder(path: destination.path)) == copied)
+        #expect(throws: (any Error).self) { try SharedFileTransfer.copy([file], to: SharedFolder(path: destination.path, readOnly: true)) }
+        #expect(throws: (any Error).self) { try SharedFileTransfer.copy([root], to: SharedFolder(path: destination.path)) }
         let link = source.appendingPathComponent("link")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
-        XCTAssertThrowsError(try SharedFileTransfer.copy([link], to: SharedFolder(path: destination.path)))
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), ["text.txt"])
+        #expect(throws: (any Error).self) { try SharedFileTransfer.copy([link], to: SharedFolder(path: destination.path)) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path) == ["text.txt"])
     }
 
-    func testLinuxInstallerHasValidShellSyntaxForBothSharingConfigurations() throws {
-        XCTAssertTrue(GuestKeyboard.supports(LinuxGuestTools.installCommand))
+    @Test func testLinuxInstallerHasValidShellSyntaxForBothSharingConfigurations() throws {
+        #expect(GuestKeyboard.supports(LinuxGuestTools.installCommand))
         let file = testRoot.appendingPathComponent("LumenLinuxTools-" + UUID().uuidString + ".sh")
         defer { try? FileManager.default.removeItem(at: file) }
         for sharing in [false, true] {
             for rosetta in [false, true] {
                 for (name, script) in LinuxGuestTools.files(sharedFolders: sharing, rosetta: rosetta) {
                     try Data(script.utf8).write(to: file)
-                    XCTAssertEqual(try shell(["-n", file.path]), 0, name)
+                    #expect(try shell(["-n", file.path]) == 0, Comment(rawValue: name))
                 }
             }
         }
         let installer = LinuxGuestTools.installer(sharedFolders: false, rosetta: true)
-        XCTAssertTrue(installer.contains("[ '1' = 1 ]"))
-        XCTAssertTrue(installer.contains("systemctl enable --now fstrim.timer"))
-        XCTAssertTrue(installer.contains(LinuxGuestTools.rosettaBinfmt))
+        #expect(installer.contains("[ '1' = 1 ]"))
+        #expect(installer.contains("systemctl enable --now fstrim.timer"))
+        #expect(installer.contains(LinuxGuestTools.rosettaBinfmt))
         // binfmt_misc fields are colon-separated; the magic and mask must not contain one.
-        XCTAssertEqual(LinuxGuestTools.rosettaBinfmt.split(separator: ":", omittingEmptySubsequences: false).count, 8)
-        XCTAssertTrue(LinuxGuestTools.rosettaBinfmt.contains(":\(LinuxGuestTools.rosettaMountPoint)/rosetta:"))
-        XCTAssertEqual(try shell(["-n", "-c", LinuxGuestTools.installCommand]), 0)
+        #expect(LinuxGuestTools.rosettaBinfmt.split(separator: ":", omittingEmptySubsequences: false).count == 8)
+        #expect(LinuxGuestTools.rosettaBinfmt.contains(":\(LinuxGuestTools.rosettaMountPoint)/rosetta:"))
+        #expect(try shell(["-n", "-c", LinuxGuestTools.installCommand]) == 0)
 
     }
     private func shell(_ arguments: [String], environment: [String: String]? = nil) throws -> Int32 {
@@ -64,7 +65,7 @@ final class GuestIntegrationTests: XCTestCase {
         return process.terminationStatus
     }
 
-    func testRunitSetupStartsBothServicesAndPreservesExistingEntries() throws {
+    @Test func testRunitSetupStartsBothServicesAndPreservesExistingEntries() throws {
         let root = testRoot.appendingPathComponent("LumenRunit-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("sv"), active = root.appendingPathComponent("active"), bin = root.appendingPathComponent("bin")
@@ -84,26 +85,26 @@ final class GuestIntegrationTests: XCTestCase {
         let log = root.appendingPathComponent("calls")
         let environment = ["PATH": bin.path + ":/usr/bin:/bin", "SV_LOG": log.path]
         let args = [script.path, source.path, active.path, "dbus", "spice-vdagentd"]
-        for _ in 0..<2 { XCTAssertEqual(try shell(args, environment: environment), 0) }
+        for _ in 0..<2 { #expect(try shell(args, environment: environment) == 0) }
         let calls = try String(contentsOf: log)
-        XCTAssertTrue(calls.contains("up " + active.appendingPathComponent("dbus").path))
-        XCTAssertTrue(calls.contains("status " + active.appendingPathComponent("spice-vdagentd").path))
+        #expect(calls.contains("up " + active.appendingPathComponent("dbus").path))
+        #expect(calls.contains("status " + active.appendingPathComponent("spice-vdagentd").path))
         // A broken, unrelated user service entry is reported, never replaced.
         let dbus = active.appendingPathComponent("dbus")
         try FileManager.default.removeItem(at: dbus)
         try FileManager.default.createSymbolicLink(atPath: dbus.path, withDestinationPath: "missing-custom-service")
-        XCTAssertEqual(try shell(args, environment: environment), 1)
-        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: dbus.path), "missing-custom-service")
-        XCTAssertEqual(try shell([script.path, source.path, active.path, "../bad"], environment: environment), 1)
+        #expect(try shell(args, environment: environment) == 1)
+        #expect(try FileManager.default.destinationOfSymbolicLink(atPath: dbus.path) == "missing-custom-service")
+        #expect(try shell([script.path, source.path, active.path, "../bad"], environment: environment) == 1)
         // A daemon that cannot start is a failure, even if its status command succeeds.
         try Data("#!/bin/bash\n[ \"$1\" = status ]\n".utf8).write(to: sv)
         let sleep = bin.appendingPathComponent("sleep")
         try Data("#!/bin/bash\nexit 0\n".utf8).write(to: sleep)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sleep.path)
-        XCTAssertEqual(try shell([script.path, source.path, active.path, "spice-vdagentd"], environment: environment), 1)
+        #expect(try shell([script.path, source.path, active.path, "spice-vdagentd"], environment: environment) == 1)
     }
 
-    func testDesktopSetupPreservesDwmStartupAndDoesNotDuplicateItsHook() throws {
+    @Test func testDesktopSetupPreservesDwmStartupAndDoesNotDuplicateItsHook() throws {
         let root = testRoot.appendingPathComponent("LumenSession-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let bin = root.appendingPathComponent("bin"), home = root.appendingPathComponent("home")
@@ -121,30 +122,30 @@ final class GuestIntegrationTests: XCTestCase {
         try Data(LinuxGuestTools.sessionScript.utf8).write(to: script)
         var environment = ["HOME": home.path, "XDG_CONFIG_HOME": home.appendingPathComponent(".config").path,
                            "DISPLAY": ":1", "WAYLAND_DISPLAY": "", "XDG_SESSION_TYPE": "x11", "PATH": bin.path + ":/usr/bin:/bin"]
-        for _ in 0..<2 { XCTAssertEqual(try shell([script.path], environment: environment), 0) }
+        for _ in 0..<2 { #expect(try shell([script.path], environment: environment) == 0) }
         let updated = try String(contentsOf: startup)
-        XCTAssertTrue(updated.hasPrefix(original))
-        XCTAssertEqual(updated.components(separatedBy: "# Lumen guest tools").count, 2)
+        #expect(updated.hasPrefix(original))
+        #expect(updated.components(separatedBy: "# Lumen guest tools").count == 2)
         environment["DISPLAY"] = ""
-        XCTAssertEqual(try shell([script.path], environment: environment), 1)
+        #expect(try shell([script.path], environment: environment) == 1)
         environment["DISPLAY"] = ":1"
         environment["XDG_SESSION_TYPE"] = "wayland"
-        XCTAssertEqual(try shell([script.path], environment: environment), 1)
+        #expect(try shell([script.path], environment: environment) == 1)
     }
 
-    func testPhysicalUSKeyboardKeepsShellSymbolsDistinctFromDigits() {
+    @Test func testPhysicalUSKeyboardKeepsShellSymbolsDistinctFromDigits() {
         var positions = Set<String>()
         for scalar in 32...126 {
             let char = Character(String(UnicodeScalar(scalar)!))
             let key = GuestKeyboard.key(for: char)
-            XCTAssertTrue(positions.insert("\(key.keyCode):\(key.shift)").inserted)
+            #expect(positions.insert("\(key.keyCode):\(key.shift)").inserted)
         }
         for (symbol, plain) in [("&", "7"), ("|", "\\"), ("(", "9"), (")", "0"), ("A", "a")] {
             let shifted = GuestKeyboard.key(for: Character(symbol))
             let unshifted = GuestKeyboard.key(for: Character(plain))
-            XCTAssertEqual(shifted.keyCode, unshifted.keyCode)
-            XCTAssertTrue(shifted.shift)
-            XCTAssertFalse(unshifted.shift)
+            #expect(shifted.keyCode == unshifted.keyCode)
+            #expect(shifted.shift)
+            #expect(!unshifted.shift)
         }
     }
 
