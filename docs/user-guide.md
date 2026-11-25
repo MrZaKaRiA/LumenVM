@@ -86,6 +86,17 @@ Choose **Sharing & Devices → Add folders…**; the picker accepts multiple fol
 
 The Windows endpoint is `\\10.0.2.4\`; each VM has a random account stored with mode 0600 in its bundle. Only selected folders are exposed, and read-only access is enforced by the server. macOS must still allow Lumen/Python to read protected folders such as Desktop. The server stops with its VM, leaves Mac sharing/accounts/firewall unchanged, and is not advertised on the local network. The project build packages Impacket 0.13.1 and hash-pinned dependencies; the current runtime requires Homebrew Python 3.14. This is an experimental integration, not a notarized standalone distribution.
 
+## Share an external drive
+
+Mount the drive in macOS and confirm it opens in Finder. Shut down the VM, open **Sharing & Devices → Share external drive…**, and select the mounted volume or a folder on it. The picker opens at `/Volumes` and adds the selection read-only by default. Save and start the VM. Keep the drive attached while the VM uses it, and shut down the VM before ejecting it.
+
+- **Linux:** Run **Install / Repair Linux Guest Tools** or mount the `lumen` VirtioFS share at `/mnt/lumen`. With multiple shares, look for the selected folder or volume name inside that mount.
+- **Windows:** Enable networking, install Lumen Tools, and choose **Devices → Connect / Open Shared Folders…**. The shares are available in File Explorer under `\\10.0.2.4`.
+
+If the drive opens in Finder but the app cannot read it, check macOS **Privacy & Security → Files and Folders** for removable-volume access. Windows sharing also needs the private sharing helper to be able to read the path.
+
+This shares files through macOS. USB passthrough and raw disk access for guest formatting, partitioning or booting are unavailable.
+
 ## Linux and macOS integration
 
 - Native guest windows, keyboard/pointer and configurable resolution with optional automatic resizing.

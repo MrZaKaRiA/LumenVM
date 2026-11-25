@@ -712,11 +712,11 @@ struct NewMachineSheet: View {
                 HStack {
                     TinyLabel(text: "SHARED FOLDERS")
                     Spacer()
-                    Button("Add folders…", action: chooseSharedFolder)
+                    Button("Add folders…") { chooseSharedFolder() }
                         .buttonStyle(CapsuleButtonStyle()).disabled(sharedFolders.count >= 32)
                 }
                 if sharedFolders.isEmpty {
-                    Button(action: chooseSharedFolder) {
+                    Button { chooseSharedFolder() } label: {
                         Label("Choose folders on your Mac to share…", systemImage: "folder.badge.plus")
                             .font(.system(size: 12))
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -725,6 +725,13 @@ struct NewMachineSheet: View {
                             .contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }
+                Button("Share external drive…", systemImage: "externaldrive") {
+                    chooseSharedFolder(externalDrive: true)
+                }
+                .buttonStyle(.borderless)
+                .disabled(sharedFolders.count >= 32)
+                Text("Mount the drive in macOS first. The VM accesses it as shared files. Start with read-only access or share a specific folder on the drive.")
+                    .font(.system(size: 10)).foregroundStyle(LumenStyle.secondary)
                 ForEach($sharedFolders) { $folder in
                     HStack(spacing: 10) {
                         Image(systemName: "folder.fill").foregroundStyle(LumenStyle.mint)
@@ -756,7 +763,7 @@ struct NewMachineSheet: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.025)))
-            .sharedFolderDrop(selected: useSharedFolder, installer: useInstaller, failed: { errorMessage = $0 })
+            .sharedFolderDrop(selected: { useSharedFolder($0) }, installer: useInstaller, failed: { errorMessage = $0 })
 
             // Devices & Integration toggles
             VStack(alignment: .leading, spacing: 12) {
@@ -1097,22 +1104,26 @@ struct NewMachineSheet: View {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    private func chooseSharedFolder() {
+    private func chooseSharedFolder(externalDrive: Bool = false) {
         let panel = NSOpenPanel()
         panel.title = "Choose folders to share with this virtual machine"
         panel.prompt = "Share folders"
+        if externalDrive {
+            panel.directoryURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
+            panel.message = "Select a mounted volume or a folder on it. New shares from this picker start read-only."
+        }
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = true
         filePanels.presentMultiple(panel) { urls in
-            for url in urls { useSharedFolder(url) }
+            for url in urls { useSharedFolder(url, readOnly: externalDrive) }
         }
     }
 
-    private func useSharedFolder(_ url: URL) {
+    private func useSharedFolder(_ url: URL, readOnly: Bool = false) {
         do {
             try LocalFileSelection.validateFolder(url)
-            let folder = SharedFolder(path: url.resolvingSymlinksInPath().path)
+            let folder = SharedFolder(path: url.resolvingSymlinksInPath().path, readOnly: readOnly)
             guard !sharedFolders.contains(where: { $0.path == folder.path }) else { return }
             guard sharedFolders.count < 32 else { throw LibraryError.invalidConfiguration("Choose up to 32 shared folders.") }
             sharedFolders.append(folder)
